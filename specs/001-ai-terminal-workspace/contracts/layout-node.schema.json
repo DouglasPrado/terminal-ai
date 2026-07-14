@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terminal-ai.local/schemas/layout-node.schema.json",
+  "title": "LayoutNode",
+  "description": "Recursive split-tree describing a workspace layout. A node is either a leaf pane or a split that arranges child nodes horizontally or vertically. Enforces Principle V (Layout as a Persisted Tree): arbitrary, asymmetric trees are first-class and must round-trip losslessly.",
+  "$ref": "#/$defs/layoutNode",
+  "$defs": {
+    "layoutNode": {
+      "oneOf": [
+        { "$ref": "#/$defs/pane" },
+        { "$ref": "#/$defs/split" }
+      ]
+    },
+    "pane": {
+      "type": "object",
+      "title": "Pane",
+      "description": "A leaf that hosts a single terminal pane, referenced by paneId.",
+      "additionalProperties": false,
+      "required": ["type", "paneId"],
+      "properties": {
+        "type": { "const": "pane" },
+        "paneId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id of the pane; maps to a Pane row and (optionally) a live session."
+        }
+      }
+    },
+    "split": {
+      "type": "object",
+      "title": "Split",
+      "description": "An internal node dividing space among its children along one axis. sizes are percentages that sum to ~100 and align 1:1 with children.",
+      "additionalProperties": false,
+      "required": ["type", "direction", "sizes", "children"],
+      "properties": {
+        "type": { "const": "split" },
+        "direction": {
+          "enum": ["horizontal", "vertical"],
+          "description": "horizontal = children laid out left→right; vertical = top→bottom."
+        },
+        "sizes": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "type": "number", "minimum": 0, "maximum": 100 },
+          "description": "Percentage size of each child, index-aligned with children; length MUST equal children length."
+        },
+        "children": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/layoutNode" }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "type": "split",
+      "direction": "horizontal",
+      "sizes": [45, 55],
+      "children": [
+        {
+          "type": "split",
+          "direction": "vertical",
+          "sizes": [50, 50],
+          "children": [
+            { "type": "pane", "paneId": "claude-1" },
+            { "type": "pane", "paneId": "opencode-1" }
+          ]
+        },
+        { "type": "pane", "paneId": "codex-1" }
+      ]
+    }
+  ]
+}

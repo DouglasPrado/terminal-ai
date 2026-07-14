@@ -1,0 +1,42 @@
+# --- Agent folders (may contain credentials/tokens) ---
+.claude/
+.codex/
+.opencode/
+
+# --- Rust / Cargo ---
+/target/
+**/target/
+*.rs.bk
+# NOTE: Cargo.lock IS committed (this is an application, not a library) for reproducible builds.
+
+# --- Tauri ---
+src-tauri/target/
+src-tauri/gen/
+
+# --- Node / pnpm / Vite ---
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# --- Build & logs ---
+*.log
+logs/
+
+# --- App data (never commit; secrets live here-adjacent) ---
+# ~/Library/Application Support/AITerminal/ is outside the repo, but ignore any local copies:
+AITerminal/
+*.db
+*.db-shm
+*.db-wal
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# --- Spec Kit: keep specs & templates tracked; ignore only local runtime state ---
+# (.specify/ IS tracked; nothing to ignore there by default)
