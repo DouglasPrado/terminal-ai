@@ -84,7 +84,35 @@ export interface MemoryEntry {
   type: MemoryType;
   title: string;
   body: string;
+  /** Whether Terminal AI wrote this page, or an agent did in the shared store. */
+  author: "terminal-ai" | "agent";
+  createdAt: string;
   updatedAt: string;
+}
+export type KernelState =
+  | "notInstalled"
+  | "probing"
+  | "starting"
+  | "ready"
+  | "attached"
+  | "degraded"
+  | "portConflict"
+  | "failed";
+export interface KernelStatus {
+  state: KernelState;
+  /** False for a server that was already running. The app never stops one of those. */
+  owned: boolean;
+  serverUrl: string;
+  dataDir?: string | null;
+  version?: string | null;
+  versionMatchesPin: boolean;
+  hasToken: boolean;
+  pages?: number | null;
+  pendingMigration: number;
+  hybridSearch: boolean;
+  lastCheckedAt: string;
+  lastError?: string | null;
+  guidance?: string | null;
 }
 export interface AppSettings {
   projectRoots: string[];
@@ -92,6 +120,50 @@ export interface AppSettings {
   scrollbackLines: number;
   memoryAutoCapture: boolean;
   usageRefreshSeconds: number;
+}
+export interface MigrationSkip {
+  entryId: string;
+  reason: string;
+}
+export interface MigrationReport {
+  total: number;
+  alreadyImported: number;
+  imported: number;
+  skipped: MigrationSkip[];
+  failed: MigrationSkip[];
+  completedAt?: string | null;
+}
+export interface Handoff {
+  id: string;
+  agent: string;
+  state: "open" | "accepted" | "expired";
+  summary: string;
+  openQuestions: string[];
+  nextSteps: string[];
+  createdAt: string;
+  acceptedAt?: string | null;
+}
+export type WiringKind = "mcp" | "hooks";
+export interface WiringPlan {
+  agent: string;
+  kind: WiringKind;
+  path?: string | null;
+  diff: string;
+  willCreate: boolean;
+  /** Set when something is already configured that Terminal AI did not create. */
+  conflict?: string | null;
+  /** Exactly which lifecycle events capture would record. Consent has to be informed. */
+  captureEvents: string[];
+  warnings: string[];
+}
+export interface WiringBinding {
+  id: string;
+  agent: string;
+  kind: WiringKind;
+  scopeRefId?: string | null;
+  status: "applied" | "stale";
+  path: string;
+  appliedAt: string;
 }
 export type ResumeRef = { kind: "continue" } | { kind: "byId"; ref: string };
 export interface PaneBinding {
@@ -271,17 +343,71 @@ export const ipc = {
   setSkillBinding: (skillId: string, scope: Scope, active: boolean) =>
     invoke<{ ok: true }>("set_skill_binding", { skillId, scope, active }),
   listMemory: (scope: Scope) => invoke<{ entries: MemoryEntry[] }>("list_memory", { scope }),
-  searchMemory: (query: string, scope?: Scope) =>
+  // `scope` is required, not optional: an unscoped kernel query returns pages from every
+  // project, so an optional parameter here would be a cross-project leak waiting to happen.
+  searchMemory: (query: string, scope: Scope) =>
     invoke<{ entries: MemoryEntry[] }>("search_memory", { query, scope }),
   addMemory: (scope: Scope, type: MemoryType, title: string, body: string) =>
     invoke<{ entryId: string }>("add_memory", { scope, type, title, body }),
-  captureSelectionToMemory: (sessionId: string, text: string, scope: Scope, type: MemoryType) =>
+  captureSelectionToMemory: (
+    sessionId: string,
+    text: string,
+    scope: Scope,
+    type: MemoryType,
+    title?: string,
+  ) =>
     invoke<{ entryId: string }>("capture_selection_to_memory", {
       sessionId,
       text,
       scope,
       type,
+      title,
     }),
+  updateMemory: (scope: Scope, path: string, title: string | undefined, body: string) =>
+    invoke<{ entryId: string }>("update_memory", { scope, path, title, body }),
+  deleteMemory: (scope: Scope, path: string) =>
+    invoke<{ ok: true }>("delete_memory", { scope, path }),
+  readMemoryPage: (scope: Scope, path: string) =>
+    invoke<{ page: MemoryEntry }>("read_memory_page", { scope, path }),
+  getMemoryKernelStatus: () => invoke<{ status: KernelStatus }>("get_memory_kernel_status"),
+  startMemoryKernel: () => invoke<{ status: KernelStatus }>("start_memory_kernel"),
+  stopMemoryKernel: () => invoke<{ status: KernelStatus }>("stop_memory_kernel"),
+  restartMemoryKernel: () => invoke<{ status: KernelStatus }>("restart_memory_kernel"),
+  setMemoryKernelSettings: (patch: {
+    serverUrl?: string;
+    binaryPath?: string;
+    autoStart?: boolean;
+    hybridSearch?: boolean;
+  }) => invoke<{ status: KernelStatus }>("set_memory_kernel_settings", patch),
+  setMemoryKernelToken: (token: string | null) =>
+    invoke<{ ok: true }>("set_memory_kernel_token", { token }),
+  previewMemoryWiring: (agent: string, scope: Scope, kinds: WiringKind[]) =>
+    invoke<{ plans: WiringPlan[] }>("preview_memory_wiring", { agent, scope, kinds }),
+  applyMemoryWiring: (agent: string, scope: Scope, kinds: WiringKind[]) =>
+    invoke<{ applied: string[] }>("apply_memory_wiring", { agent, scope, kinds }),
+  removeMemoryWiring: (agent: string, scope: Scope) =>
+    invoke<{ removed: string[] }>("remove_memory_wiring", { agent, scope }),
+  listMemoryWiring: () =>
+    invoke<{ bindings: WiringBinding[]; captureUnavailable: Array<[string, string]> }>(
+      "list_memory_wiring",
+    ),
+  listMemoryHandoffs: (scope: Scope, state?: "open" | "all") =>
+    invoke<{ handoffs: Handoff[] }>("list_memory_handoffs", { scope, state }),
+  expireMemoryHandoffs: (scope: Scope, olderThanDays: number) =>
+    invoke<{ expired: number }>("expire_memory_handoffs", { scope, olderThanDays }),
+  getMemoryBriefing: (scope: Scope) =>
+    invoke<{ briefing: string }>("get_memory_briefing", { scope }),
+  checkMemoryProjectIdentity: (projectId: string) =>
+    invoke<{
+      stale: boolean;
+      currentProject: string;
+      previousProject?: string | null;
+      previousPath?: string | null;
+    }>("check_memory_project_identity", { projectId }),
+  runMemoryMigration: (dryRun: boolean) =>
+    invoke<MigrationReport>("run_memory_migration", { dryRun }),
+  undoMemoryMigration: () =>
+    invoke<{ deleted: string[] }>("undo_memory_migration", { confirm: true }),
   previewMemoryContext: (scope: Scope) =>
     invoke<{
       composed: string;
@@ -290,5 +416,6 @@ export const ipc = {
   getSettings: () => invoke<{ settings: AppSettings }>("get_settings"),
   setSettings: (patch: Partial<AppSettings>) =>
     invoke<{ settings: AppSettings }>("set_settings", { patch }),
-  notify: (title: string, body: string) => invoke<{ ok: true }>("notify", { title, body }),
+  notify: (title: string, body: string) =>
+    invoke<{ ok: true; delivered: boolean }>("notify", { title, body }),
 };

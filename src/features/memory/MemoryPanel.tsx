@@ -1,14 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search } from "lucide-react";
+import { Bot, Plus, Search, Trash2 } from "lucide-react";
 import { ipc, type MemoryEntry, type MemoryType, type Scope } from "../../lib/ipc";
 import { Button } from "../../components/Button";
 import { Field, Select, TextArea, TextInput } from "../../components/Field";
 import { Modal } from "../../components/Modal";
+import { KernelBanner, KernelStatusChip } from "./KernelStatusChip";
+import { MigrationBanner } from "./MigrationBanner";
+import { WiringPanel } from "./WiringPanel";
+import { MemorySettings } from "./MemorySettings";
+import { ProjectIdentityNotice } from "./ProjectIdentityNotice";
+import { HandoffList } from "./HandoffList";
 
-type Selection = { sessionId: string; text: string };
+type Selection = { sessionId: string; text: string; worktreeId?: string };
+type ScopeMode = "global" | "project" | "worktree" | "session";
+
+/**
+ * Kernel content is untrusted: search snippets arrive with `<mark>` markup around the match, and a
+ * page body was written by whatever agent last touched the shared store. React escapes strings, so
+ * the risk is not injection — it is that raw markup would be shown to the user as literal text.
+ * Strip it and bound the length.
+ */
+function readable(text: string, limit = 4000): string {
+  return text
+    .replace(/<[^>]*>/g, "")
+    .slice(0, limit)
+    .trim();
+}
 
 export function MemoryPanel({ projectId }: { projectId?: string }) {
-  const [scopeMode, setScopeMode] = useState<"global" | "project" | "session">("global");
+  const [scopeMode, setScopeMode] = useState<ScopeMode>("global");
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<Selection>();
@@ -17,13 +37,17 @@ export function MemoryPanel({ projectId }: { projectId?: string }) {
   const [body, setBody] = useState("");
   const [memoryType, setMemoryType] = useState<MemoryType>("fact");
   const [contextPreview, setContextPreview] = useState("");
+  const [open, setOpen] = useState<MemoryEntry>();
+  const [editing, setEditing] = useState<MemoryEntry>();
   const scope = useMemo<Scope>(
     () =>
       scopeMode === "project" && projectId
         ? { level: "project", refId: projectId }
-        : scopeMode === "session" && selection
-          ? { level: "session", refId: selection.sessionId }
-          : { level: "global" },
+        : scopeMode === "worktree" && selection?.worktreeId
+          ? { level: "worktree", refId: selection.worktreeId }
+          : scopeMode === "session" && selection
+            ? { level: "session", refId: selection.sessionId }
+            : { level: "global" },
     [projectId, scopeMode, selection],
   );
   const refresh = () =>
@@ -46,11 +70,16 @@ export function MemoryPanel({ projectId }: { projectId?: string }) {
 
   const save = () => {
     const chosenScope = scope;
-    const request = selection
-      ? ipc.captureSelectionToMemory(selection.sessionId, body, chosenScope, memoryType)
-      : ipc.addMemory(chosenScope, memoryType, title, body);
+    // Three paths, and the middle one used to silently lose work: capturing a selection sent only
+    // the body, so a title the user had just edited was thrown away and re-derived from the text.
+    const request = editing
+      ? ipc.updateMemory(chosenScope, editing.id, title, body)
+      : selection
+        ? ipc.captureSelectionToMemory(selection.sessionId, body, chosenScope, memoryType, title)
+        : ipc.addMemory(chosenScope, memoryType, title, body);
     void request.then(() => {
       setEditor(false);
+      setEditing(undefined);
       setSelection(undefined);
       setTitle("");
       setBody("");
@@ -58,20 +87,54 @@ export function MemoryPanel({ projectId }: { projectId?: string }) {
     });
   };
 
+  const openEntry = (entry: MemoryEntry) => {
+    // The list only carries a snippet; the body has to be fetched. Before this, clicking a row did
+    // nothing at all — the only way to read a memory was the tooltip.
+    void ipc.readMemoryPage(scope, entry.id).then((result) => setOpen(result.page));
+  };
+
+  const startEdit = (entry: MemoryEntry) => {
+    setEditing(entry);
+    setTitle(entry.title);
+    setBody(entry.body);
+    setMemoryType(entry.type);
+    setOpen(undefined);
+    setEditor(true);
+  };
+
+  const remove = (entry: MemoryEntry) => {
+    void ipc.deleteMemory(scope, entry.id).then(() => {
+      setOpen(undefined);
+      refresh();
+    });
+  };
+
   return (
     <div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <KernelStatusChip />
+      </div>
+      <div className="mb-2 space-y-2">
+        <KernelBanner />
+        <ProjectIdentityNotice projectId={projectId} />
+        <MigrationBanner onDone={refresh} />
+        <HandoffList scope={scope} />
+        <MemorySettings />
+        <WiringPanel projectId={projectId} />
+      </div>
       <div className="mb-2 flex items-end gap-1.5">
         <div className="min-w-0 flex-1">
           <Field label="Escopo">
             <Select
               value={scopeMode}
-              onChange={(event) =>
-                setScopeMode(event.target.value as "global" | "project" | "session")
-              }
+              onChange={(event) => setScopeMode(event.target.value as ScopeMode)}
             >
               <option value="global">Global</option>
               <option value="project" disabled={!projectId}>
                 Projeto selecionado
+              </option>
+              <option value="worktree" disabled={!selection?.worktreeId}>
+                Worktree da sessão
               </option>
               <option value="session" disabled={!selection}>
                 Sessão selecionada
@@ -103,17 +166,39 @@ export function MemoryPanel({ projectId }: { projectId?: string }) {
       </div>
       <div className="space-y-px">
         {entries.map((entry) => (
-          <button
+          <div
             key={entry.id}
-            type="button"
-            className="flex w-full items-center gap-2 rounded-control px-1.5 py-1.5 text-left transition-colors hover:bg-raised"
-            title={entry.body}
+            className="group flex w-full items-center gap-2 rounded-control px-1.5 py-1.5 transition-colors hover:bg-raised"
           >
-            <span className="shrink-0 rounded-chip border border-border-subtle bg-raised px-1.5 py-px font-mono text-readout text-accent">
-              {entry.type}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-meta text-text-muted">{entry.title}</span>
-          </button>
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              onClick={() => openEntry(entry)}
+              title={readable(entry.body, 400)}
+            >
+              <span className="shrink-0 rounded-chip border border-border-subtle bg-raised px-1.5 py-px font-mono text-readout text-accent">
+                {entry.type}
+              </span>
+              {entry.author === "agent" ? (
+                <Bot
+                  size={12}
+                  aria-label="Escrita por um agente"
+                  className="shrink-0 text-text-faint"
+                />
+              ) : null}
+              <span className="min-w-0 flex-1 truncate text-meta text-text-muted">
+                {entry.title}
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Excluir ${entry.title}`}
+              className="shrink-0 text-text-faint opacity-0 transition-opacity hover:text-rose-400 group-hover:opacity-100"
+              onClick={() => remove(entry)}
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
         ))}
         {entries.length === 0 && (
           <p className="rounded-control border border-dashed border-border px-3 py-6 text-center text-meta text-text-faint">
@@ -145,6 +230,21 @@ export function MemoryPanel({ projectId }: { projectId?: string }) {
           }}
           onSave={save}
         />
+      )}
+      {open && (
+        <Modal title={open.title} onClose={() => setOpen(undefined)}>
+          <p className="mb-2 text-meta text-text-faint">
+            {open.type}
+            {open.author === "agent" ? " · escrita por um agente" : ""}
+          </p>
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap font-mono text-readout text-text-muted">
+            {readable(open.body)}
+          </pre>
+          <div className="mt-3 flex gap-1.5">
+            <Button onClick={() => startEdit(open)}>Editar</Button>
+            <Button onClick={() => remove(open)}>Excluir</Button>
+          </div>
+        </Modal>
       )}
       {contextPreview && (
         <Modal
