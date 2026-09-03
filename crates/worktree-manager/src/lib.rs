@@ -193,4 +193,52 @@ mod tests {
         assert!(list(&project).expect("list after remove").is_empty());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
+
+    /// Why the memory kernel never writes configuration into a worktree.
+    ///
+    /// Feature 002 wanted to pin each worktree's memory project with a file in its working tree.
+    /// This is what stops that: `is_dirty` counts *any* non-ignored status entry, and an untracked
+    /// file is one — so the worktree becomes undeletable until the user finds and removes a file
+    /// they never created. Capture is therefore configured at project scope, and worktrees are
+    /// folded into the parent project by the kernel's own `--project-strategy repo-root`.
+    ///
+    /// If this test ever starts failing because `is_dirty` learned to ignore untracked files, that
+    /// design constraint is gone and the simpler approach becomes available again.
+    #[test]
+    fn an_untracked_file_makes_a_worktree_undeletable() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-ai-worktree-dirty-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).expect("project directory");
+        let repo = Repository::init(&project).expect("repository");
+        std::fs::write(project.join("README.md"), "main\n").expect("fixture");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = git2::Signature::now("Terminal AI", "test@terminal.ai").expect("signature");
+        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .expect("commit");
+        drop(tree);
+        drop(repo);
+
+        let created = create(&project, "feature/dirty", true).expect("create worktree");
+        // Exactly what pinning the memory project inside the tree would have written.
+        std::fs::write(created.path.join(".ai-memory.toml"), "project = \"x\"\n")
+            .expect("write marker");
+
+        let error =
+            remove(&project, &created.id).expect_err("a dirty worktree must not be removed");
+        assert!(
+            matches!(error, WorktreeError::Dirty(_)),
+            "expected Dirty, got {error:?}"
+        );
+
+        std::fs::remove_file(created.path.join(".ai-memory.toml")).expect("undo the marker");
+        remove(&project, &created.id).expect("removable once the stray file is gone");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
 }

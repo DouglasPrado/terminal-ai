@@ -80,7 +80,8 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("query");
-        assert!(tables >= 15);
+        // V005 adds memory_wiring_bindings and memory_migration_log (feature 002).
+        assert!(tables >= 18);
         let _ = std::fs::remove_file(path);
     }
 }
