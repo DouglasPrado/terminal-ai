@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod host;
+pub mod memory;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
