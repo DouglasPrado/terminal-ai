@@ -40,8 +40,9 @@
     "externalBin": [
       "binaries/ai-memory"
     ],
-    "resources": [
-      "resources/third-party/ai-memory-LICENSE.txt"
-    ]
+    "resources": {
+      "resources/third-party/ai-memory-LICENSE.txt": "resources/third-party/ai-memory-LICENSE.txt",
+      "binaries/hooks/": "hooks/"
+    }
   }
 }
