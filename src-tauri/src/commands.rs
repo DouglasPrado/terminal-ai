@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use tauri::{ipc::Channel, AppHandle, Emitter, State};
+use terminal_ai_domain::memory::{KernelStatus, MemoryKernel, MemoryPage, MemorySource};
 use terminal_ai_domain::{
     host::{LaunchContext, ResumeRef, SessionHost, Signal},
     ProjectId, ProviderId, SessionId, WorkspaceId, WorktreeId,
@@ -13,11 +14,13 @@ use terminal_ai_domain::{
 use terminal_ai_domain::{
     LayoutNode, MemoryType, ProviderKind, ProviderProfile, Scope, ScopeLevel,
 };
-use terminal_ai_memory_manager as memory_manager;
+use terminal_ai_memory_kernel::kernel::AiMemoryKernel;
+use terminal_ai_memory_kernel::wiring::{Agent as WiringAgent, WiringKind};
 use terminal_ai_persistence::dao::{
-    LayoutPresetRecord, LayoutPresetsDao, ProjectRecord, ProjectsDao, ProviderProfileRecord,
-    ProviderProfilesDao, SessionRecord, SessionsDao, SettingsDao, SkillBindingRecord, SkillRecord,
-    SkillsDao, UsageSnapshotRecord, UsageSnapshotsDao, WorkspacesDao, WorktreeRecord, WorktreesDao,
+    LayoutPresetRecord, LayoutPresetsDao, MemoryWiringDao, MemoryWiringRecord, ProjectRecord,
+    ProjectsDao, ProviderProfileRecord, ProviderProfilesDao, SessionRecord, SessionsDao,
+    SettingsDao, SkillBindingRecord, SkillRecord, SkillsDao, UsageSnapshotRecord,
+    UsageSnapshotsDao, WorkspacesDao, WorktreeRecord, WorktreesDao,
 };
 use terminal_ai_platform_macos::resolve_login_shell_env;
 use terminal_ai_project_manager as project_manager;
@@ -2162,9 +2165,20 @@ pub async fn set_skill_binding(
     Ok(OkResponse { ok: true })
 }
 
+/// Builds the kernel facade for this request.
+///
+/// Cheap: the supervisor is shared and holds the cached status, so this is a couple of Arc clones
+/// rather than a connection.
+fn kernel(state: &State<'_, AppState>) -> AiMemoryKernel {
+    AiMemoryKernel::new(
+        std::sync::Arc::clone(&state.kernel),
+        std::sync::Arc::new(crate::memory::DbScopeDirectory::new(state.database.clone())),
+    )
+}
+
 #[derive(Serialize)]
 pub struct MemoryEntriesResponse {
-    pub entries: Vec<memory_manager::MemoryEntry>,
+    pub entries: Vec<MemoryPage>,
 }
 
 #[tauri::command]
@@ -2172,30 +2186,22 @@ pub async fn list_memory(
     scope: Scope,
     state: State<'_, AppState>,
 ) -> Result<MemoryEntriesResponse, AppError> {
-    let database = state.database.clone();
-    let root = state.memory_root.clone();
-    let entries =
-        tokio::task::spawn_blocking(move || memory_manager::list(&database, &scope, &root))
-            .await
-            .map_err(AppError::internal)?
-            .map_err(AppError::internal)?;
+    let entries = kernel(&state).list(&scope, 100).await?;
     Ok(MemoryEntriesResponse { entries })
 }
 
+/// Search memory within a scope.
+///
+/// `scope` is required, unlike in feature 001. A kernel query without a project returns pages from
+/// every project — verified against a running kernel — so an optional scope here would be a silent
+/// cross-project leak waiting for the first caller who omits it (FR-046).
 #[tauri::command]
 pub async fn search_memory(
     query: String,
-    scope: Option<Scope>,
+    scope: Scope,
     state: State<'_, AppState>,
 ) -> Result<MemoryEntriesResponse, AppError> {
-    let database = state.database.clone();
-    let root = state.memory_root.clone();
-    let entries = tokio::task::spawn_blocking(move || {
-        memory_manager::search(&database, &root, &query, scope.as_ref())
-    })
-    .await
-    .map_err(AppError::internal)?
-    .map_err(AppError::internal)?;
+    let entries = kernel(&state).search(&query, &scope, 100).await?;
     Ok(MemoryEntriesResponse { entries })
 }
 
@@ -2213,23 +2219,70 @@ pub async fn add_memory(
     body: String,
     state: State<'_, AppState>,
 ) -> Result<MemoryCreatedResponse, AppError> {
-    let database = state.database.clone();
-    let root = state.memory_root.clone();
-    let entry_id = tokio::task::spawn_blocking(move || {
-        memory_manager::add(&database, &root, &scope, r#type, &title, &body)
-    })
-    .await
-    .map_err(AppError::internal)?
-    .map_err(AppError::internal)?;
+    if title.trim().is_empty() || body.trim().is_empty() {
+        return Err(AppError {
+            code: "EMPTY_MEMORY".into(),
+            message: "A memory entry needs a title and a body.".into(),
+        });
+    }
+    let entry_id = kernel(&state)
+        .write(&scope, r#type, title.trim(), body.trim())
+        .await?;
     Ok(MemoryCreatedResponse { entry_id })
 }
 
+#[tauri::command]
+pub async fn update_memory(
+    scope: Scope,
+    path: String,
+    title: Option<String>,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<MemoryCreatedResponse, AppError> {
+    kernel(&state)
+        .update(&scope, &path, title.as_deref(), &body)
+        .await?;
+    Ok(MemoryCreatedResponse { entry_id: path })
+}
+
+#[tauri::command]
+pub async fn delete_memory(
+    scope: Scope,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<OkResponse, AppError> {
+    kernel(&state).delete(&scope, &path).await?;
+    Ok(OkResponse { ok: true })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryPageResponse {
+    pub page: MemoryPage,
+}
+
+#[tauri::command]
+pub async fn read_memory_page(
+    scope: Scope,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<MemoryPageResponse, AppError> {
+    let page = kernel(&state).read(&scope, &path).await?;
+    Ok(MemoryPageResponse { page })
+}
+
+/// Save a terminal selection as memory.
+///
+/// This is the *only* path from terminal output into memory, and it stores exactly the text the
+/// user selected. The scope check below is the FR-023 gate: a session may only write memory into a
+/// scope it actually belongs to.
 #[tauri::command]
 pub async fn capture_selection_to_memory(
     session_id: String,
     text: String,
     scope: Scope,
     r#type: MemoryType,
+    title: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<MemoryCreatedResponse, AppError> {
     if text.trim().is_empty() {
@@ -2259,10 +2312,16 @@ pub async fn capture_selection_to_memory(
             message: "The selected session does not belong to that memory scope.".into(),
         });
     }
-    let title = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| crate::events::sanitize_title(line.trim()))
+    // Honour a title the user typed. Deriving one from the text is the fallback, not the rule —
+    // before this, an edited title was silently discarded.
+    let title = title
+        .map(|value| crate::events::sanitize_title(value.trim()))
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            text.lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| crate::events::sanitize_title(line.trim()))
+        })
         .unwrap_or_else(|| "Terminal selection".into());
     add_memory(scope, r#type, title, text, state).await
 }
@@ -2270,7 +2329,7 @@ pub async fn capture_selection_to_memory(
 #[derive(Serialize)]
 pub struct MemoryContextResponse {
     pub composed: String,
-    pub sources: Vec<memory_manager::MemorySource>,
+    pub sources: Vec<MemorySource>,
 }
 
 #[tauri::command]
@@ -2278,15 +2337,691 @@ pub async fn preview_memory_context(
     scope: Scope,
     state: State<'_, AppState>,
 ) -> Result<MemoryContextResponse, AppError> {
-    let database = state.database.clone();
-    let root = state.memory_root.clone();
-    let (composed, sources) = tokio::task::spawn_blocking(move || {
-        memory_manager::preview_context(&database, &root, &scope)
-    })
-    .await
-    .map_err(AppError::internal)?
-    .map_err(AppError::internal)?;
+    let (composed, sources) = kernel(&state).compose_context(&scope, 50_000).await?;
     Ok(MemoryContextResponse { composed, sources })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectIdentityResponse {
+    /// True when the project's directory was renamed or moved since memory was written for it.
+    pub stale: bool,
+    pub current_project: String,
+    pub previous_project: Option<String>,
+    pub previous_path: Option<String>,
+}
+
+/// Has this project's memory identity drifted?
+///
+/// A project is named in the kernel by its directory basename, so that agents deriving it from
+/// their working directory land on the same place. Renaming the directory therefore re-points the
+/// project, and the old memory stops being reachable from the panel. Detecting that and saying so
+/// is the difference between "your memory moved" and an apparently empty panel (FR-064).
+///
+/// Recording happens here too: the first check for a project remembers what it resolved to, so the
+/// comparison has something to compare against next time.
+#[tauri::command]
+pub async fn check_memory_project_identity(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<ProjectIdentityResponse, AppError> {
+    let connection = state.database.connection()?;
+    let path: String = connection
+        .query_row(
+            "SELECT path FROM projects WHERE id=?1",
+            [&project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| AppError {
+            code: "PROJECT_NOT_FOUND".into(),
+            message: "That project no longer exists.".into(),
+        })?;
+    drop(connection);
+
+    let current = terminal_ai_memory_kernel::scope::project_name(std::path::Path::new(&path))?;
+    let dao = terminal_ai_persistence::dao::MemoryProjectIdentityDao(&state.database);
+    let previous = dao.get(&project_id)?;
+
+    let stale = previous
+        .as_ref()
+        .is_some_and(|record| record.kernel_project != current);
+
+    if previous.is_none() {
+        dao.record(&terminal_ai_persistence::dao::MemoryProjectIdentity {
+            project_id: project_id.clone(),
+            kernel_project: current.clone(),
+            repo_path: path.clone(),
+        })?;
+    }
+
+    Ok(ProjectIdentityResponse {
+        stale,
+        current_project: current,
+        previous_project: previous.as_ref().map(|r| r.kernel_project.clone()),
+        previous_path: previous.map(|r| r.repo_path),
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Agent wiring
+// ---------------------------------------------------------------------------------------------
+
+/// Resolve the project root a wiring request targets, and reject scopes that cannot carry one.
+///
+/// Capture is applied at project scope only. A worktree gets its memory through the parent
+/// project (`--project-strategy repo-root`), and writing a settings file into a worktree would
+/// leave an untracked file behind — which `worktree-manager::is_dirty` counts, making
+/// `remove_worktree` fail afterwards.
+fn wiring_project_root(scope: &Scope, state: &State<'_, AppState>) -> Result<PathBuf, AppError> {
+    let refuse = |message: &str| AppError {
+        code: "MEMORY_WIRING_SCOPE".into(),
+        message: message.into(),
+    };
+    let project_id = match scope.level {
+        ScopeLevel::Project => scope
+            .ref_id
+            .clone()
+            .ok_or_else(|| refuse("Pick a project."))?,
+        ScopeLevel::Worktree => {
+            return Err(refuse(
+                "Memory is configured for the whole repository, not per worktree — worktrees \
+                 already share the project's memory.",
+            ))
+        }
+        _ => return Err(refuse("Memory can only be configured for a project.")),
+    };
+    let connection = state.database.connection()?;
+    let path: String = connection
+        .query_row(
+            "SELECT path FROM projects WHERE id=?1",
+            [&project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| refuse("That project no longer exists."))?;
+    Ok(PathBuf::from(path))
+}
+
+fn wiring_agent(value: &str) -> Result<WiringAgent, AppError> {
+    WiringAgent::parse(value).ok_or_else(|| AppError {
+        code: "UNKNOWN_AGENT".into(),
+        message: format!("{value} is not an agent Terminal AI can configure."),
+    })
+}
+
+fn wiring_kind(value: &str) -> Result<WiringKind, AppError> {
+    match value {
+        "mcp" => Ok(WiringKind::Mcp),
+        "hooks" => Ok(WiringKind::Hooks),
+        other => Err(AppError {
+            code: "UNKNOWN_WIRING_KIND".into(),
+            message: format!("{other} is not a kind of wiring."),
+        }),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WiringPreviewResponse {
+    pub plans: Vec<terminal_ai_memory_kernel::wiring::WiringPlan>,
+}
+
+/// Show exactly what connecting an agent would change, without changing anything.
+#[tauri::command]
+pub async fn preview_memory_wiring(
+    agent: String,
+    scope: Scope,
+    kinds: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<WiringPreviewResponse, AppError> {
+    let agent = wiring_agent(&agent)?;
+    let root = wiring_project_root(&scope, &state)?;
+    let cli = state.kernel.cli().ok_or_else(|| AppError {
+        code: "MEMORY_KERNEL_UNAVAILABLE".into(),
+        message: "The memory kernel is not available.".into(),
+    })?;
+    let server_url = cli.config().server_url.clone();
+    let managed = crate::memory::list_bindings(&state.database, None)?;
+
+    let mut plans = Vec::new();
+    for kind in kinds {
+        let kind = wiring_kind(&kind)?;
+        let already = managed
+            .iter()
+            .any(|(record, _)| record.agent == agent.cli_value() && record.kind == kind.as_str());
+        plans.push(
+            crate::memory::preview(&cli, agent, kind, &server_url, Some(&root), already).await?,
+        );
+    }
+    Ok(WiringPreviewResponse { plans })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WiringAppliedResponse {
+    pub applied: Vec<String>,
+}
+
+/// Apply wiring the user has just seen and approved.
+#[tauri::command]
+pub async fn apply_memory_wiring(
+    agent: String,
+    scope: Scope,
+    kinds: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<WiringAppliedResponse, AppError> {
+    let agent_kind = wiring_agent(&agent)?;
+    let root = wiring_project_root(&scope, &state)?;
+    let cli = state.kernel.cli().ok_or_else(|| AppError {
+        code: "MEMORY_KERNEL_UNAVAILABLE".into(),
+        message: "The memory kernel is not available.".into(),
+    })?;
+    let server_url = cli.config().server_url.clone();
+    let backups = state.app_root.join("wiring-backups");
+
+    let mut applied = Vec::new();
+    for kind in kinds {
+        let kind = wiring_kind(&kind)?;
+
+        // The master switch above the per-project consent. Without it, capture cannot be installed
+        // at all, however many times the flow is confirmed (FR-058, Principle III).
+        if kind == WiringKind::Hooks {
+            let consented = SettingsDao(&state.database)
+                .get("memory_auto_capture")?
+                .and_then(|value| value.as_bool())
+                == Some(true);
+            if !consented {
+                return Err(AppError {
+                    code: "MEMORY_CAPTURE_NOT_CONSENTED".into(),
+                    message: "Turn on memory capture in Settings before enabling it for a project."
+                        .into(),
+                });
+            }
+        }
+
+        let artifact =
+            crate::memory::apply(&cli, agent_kind, kind, &server_url, Some(&root), &backups)
+                .await?;
+
+        MemoryWiringDao(&state.database).upsert(&MemoryWiringRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            agent: agent_kind.cli_value().to_owned(),
+            kind: kind.as_str().to_owned(),
+            scope: "project".to_owned(),
+            scope_ref_id: scope.ref_id.clone(),
+            enabled: true,
+            artifacts: vec![terminal_ai_persistence::dao::MemoryWiringArtifact {
+                path: artifact.path.to_string_lossy().into_owned(),
+                created_file: artifact.created_file,
+                backup_path: artifact
+                    .backup_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                before_sha256: artifact.before_sha256.clone(),
+                after_sha256: artifact.after_sha256.clone(),
+                binary_path: artifact
+                    .binary_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                marker: format!(
+                    "terminal-ai-memory:{}:{}",
+                    agent_kind.cli_value(),
+                    kind.as_str()
+                ),
+                applied_at: artifact.applied_at.clone(),
+            }],
+        })?;
+        applied.push(artifact.path.to_string_lossy().into_owned());
+    }
+    Ok(WiringAppliedResponse { applied })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WiringRemovedResponse {
+    pub removed: Vec<String>,
+}
+
+/// Undo wiring — only what Terminal AI recorded, and only if it is untouched.
+#[tauri::command]
+pub async fn remove_memory_wiring(
+    agent: String,
+    scope: Scope,
+    state: State<'_, AppState>,
+) -> Result<WiringRemovedResponse, AppError> {
+    let agent_kind = wiring_agent(&agent)?;
+    let cli = state.kernel.cli().ok_or_else(|| AppError {
+        code: "MEMORY_KERNEL_UNAVAILABLE".into(),
+        message: "The memory kernel is not available.".into(),
+    })?;
+    let server_url = cli.config().server_url.clone();
+    let dao = MemoryWiringDao(&state.database);
+
+    let mut removed = Vec::new();
+    for record in dao.list()? {
+        if record.agent != agent_kind.cli_value() || record.scope_ref_id != scope.ref_id {
+            continue;
+        }
+        let kind = wiring_kind(&record.kind)?;
+        for stored in &record.artifacts {
+            let artifact = terminal_ai_memory_kernel::wiring::WiringArtifact {
+                path: PathBuf::from(&stored.path),
+                created_file: stored.created_file,
+                backup_path: stored.backup_path.as_deref().map(PathBuf::from),
+                before_sha256: stored.before_sha256.clone(),
+                after_sha256: stored.after_sha256.clone(),
+                binary_path: stored.binary_path.as_deref().map(PathBuf::from),
+                applied_at: stored.applied_at.clone(),
+            };
+            removed.push(crate::memory::remove_artifact(&cli, kind, &server_url, &artifact).await?);
+        }
+        dao.delete(&record.id)?;
+    }
+    Ok(WiringRemovedResponse { removed })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WiringBinding {
+    pub id: String,
+    pub agent: String,
+    pub kind: String,
+    pub scope_ref_id: Option<String>,
+    /// `applied` · `stale` — the sidecar moved and hook commands now point at nothing.
+    pub status: String,
+    pub path: String,
+    pub applied_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WiringListResponse {
+    pub bindings: Vec<WiringBinding>,
+    /// Agents whose capture cannot be confined to one project, with the reason (FR-065).
+    pub capture_unavailable: Vec<(String, String)>,
+}
+
+#[tauri::command]
+pub async fn list_memory_wiring(
+    state: State<'_, AppState>,
+) -> Result<WiringListResponse, AppError> {
+    let binary = state.kernel.cli().map(|cli| cli.config().binary.clone());
+    let bindings = crate::memory::list_bindings(&state.database, binary.as_deref())?
+        .into_iter()
+        .map(|(record, stale)| WiringBinding {
+            id: record.id,
+            agent: record.agent,
+            kind: record.kind,
+            scope_ref_id: record.scope_ref_id,
+            status: if stale { "stale" } else { "applied" }.into(),
+            path: record
+                .artifacts
+                .first()
+                .map(|a| a.path.clone())
+                .unwrap_or_default(),
+            applied_at: record
+                .artifacts
+                .first()
+                .map(|a| a.applied_at.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    let capture_unavailable = [WiringAgent::Codex, WiringAgent::OpenCode]
+        .into_iter()
+        .filter_map(|agent| {
+            agent
+                .capture_unavailable_reason()
+                .map(|reason| (agent.cli_value().to_owned(), reason.to_owned()))
+        })
+        .collect();
+
+    Ok(WiringListResponse {
+        bindings,
+        capture_unavailable,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffsResponse {
+    pub handoffs: Vec<terminal_ai_domain::memory::Handoff>,
+}
+
+/// Continuity waiting in this project.
+///
+/// Read-only by design. A handoff is consumed when the next agent accepts it at session start, so
+/// an app that accepted one would take the context away from the agent that was about to receive
+/// it. The app's job is to show that something is waiting.
+#[tauri::command]
+pub async fn list_memory_handoffs(
+    scope: Scope,
+    state: Option<String>,
+    app_state: State<'_, AppState>,
+) -> Result<HandoffsResponse, AppError> {
+    let filter = match state.as_deref() {
+        Some("all") | None => Some(terminal_ai_domain::memory::HandoffState::Open),
+        Some("open") => Some(terminal_ai_domain::memory::HandoffState::Open),
+        Some("accepted") => Some(terminal_ai_domain::memory::HandoffState::Accepted),
+        Some("expired") => Some(terminal_ai_domain::memory::HandoffState::Expired),
+        Some(other) => {
+            return Err(AppError {
+                code: "UNKNOWN_HANDOFF_STATE".into(),
+                message: format!("{other} is not a handoff state."),
+            })
+        }
+    };
+    let handoffs = kernel(&app_state).handoffs(&scope, filter).await?;
+    Ok(HandoffsResponse { handoffs })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffsExpiredResponse {
+    pub expired: u32,
+}
+
+/// Clear handoffs that have gone stale.
+#[tauri::command]
+pub async fn expire_memory_handoffs(
+    scope: Scope,
+    older_than_days: u32,
+    state: State<'_, AppState>,
+) -> Result<HandoffsExpiredResponse, AppError> {
+    if older_than_days == 0 {
+        return Err(AppError {
+            code: "INVALID_AGE".into(),
+            message: "Choose how old a handoff has to be before it is cleared.".into(),
+        });
+    }
+    let expired = kernel(&state)
+        .expire_handoffs(&scope, older_than_days)
+        .await?;
+    Ok(HandoffsExpiredResponse { expired })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BriefingResponse {
+    pub briefing: String,
+}
+
+#[tauri::command]
+pub async fn get_memory_briefing(
+    scope: Scope,
+    state: State<'_, AppState>,
+) -> Result<BriefingResponse, AppError> {
+    let briefing = kernel(&state).briefing(&scope).await?;
+    Ok(BriefingResponse { briefing })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Legacy memory import
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationSkip {
+    pub entry_id: String,
+    pub reason: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationResponse {
+    pub total: usize,
+    pub already_imported: usize,
+    pub imported: usize,
+    pub skipped: Vec<MigrationSkip>,
+    pub failed: Vec<MigrationSkip>,
+    pub completed_at: Option<String>,
+}
+
+/// Import the legacy memory store into the kernel.
+///
+/// Never runs on its own: the panel shows a pending count and the user decides. A silent first-boot
+/// import would write into a store shared with the user's own agents without being asked, which is
+/// exactly what Principle III exists to prevent.
+#[tauri::command]
+pub async fn run_memory_migration(
+    dry_run: bool,
+    state: State<'_, AppState>,
+) -> Result<MigrationResponse, AppError> {
+    let database = state.database.clone();
+    let entries = crate::memory::load_legacy_entries(&database)?;
+    let imported = crate::memory::imported_index(&database)?;
+    let directory = crate::memory::DbScopeDirectory::new(database.clone());
+    let plan = terminal_ai_memory_kernel::migration::plan(&entries, &imported, &directory);
+
+    if dry_run {
+        // A preview writes nothing at all, so the user can read the report — including exactly
+        // which entries would be skipped and why — before committing.
+        return Ok(MigrationResponse {
+            total: plan.total(),
+            already_imported: plan.already_imported.len(),
+            imported: plan.to_import.len(),
+            skipped: plan
+                .skipped
+                .into_iter()
+                .map(|s| MigrationSkip {
+                    entry_id: s.entry_id,
+                    reason: s.reason,
+                })
+                .collect(),
+            failed: Vec::new(),
+            completed_at: None,
+        });
+    }
+
+    let cli = state.kernel.cli().ok_or_else(|| AppError {
+        code: "MEMORY_KERNEL_UNAVAILABLE".into(),
+        message: "The memory kernel is not available, so nothing can be imported yet.".into(),
+    })?;
+    let writer = crate::memory::CliPageWriter(cli);
+    let recorder = crate::memory::DbMigrationRecorder(database);
+    let report = terminal_ai_memory_kernel::migration::run(plan, &writer, &recorder).await;
+
+    Ok(MigrationResponse {
+        total: report.total,
+        already_imported: report.already_imported,
+        imported: report.imported,
+        skipped: report
+            .skipped
+            .into_iter()
+            .map(|s| MigrationSkip {
+                entry_id: s.entry_id,
+                reason: s.reason,
+            })
+            .collect(),
+        failed: report
+            .failed
+            .into_iter()
+            .map(|s| MigrationSkip {
+                entry_id: s.entry_id,
+                reason: s.reason,
+            })
+            .collect(),
+        completed_at: Some(chrono::Utc::now().to_rfc3339()),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationUndoResponse {
+    pub deleted: Vec<String>,
+}
+
+/// Undo the import.
+///
+/// Removes only pages named in the migration log, and leaves every legacy row and markdown file on
+/// disk untouched — which is what makes adopting the kernel a reversible decision rather than a
+/// one-way door.
+#[tauri::command]
+pub async fn undo_memory_migration(
+    confirm: bool,
+    state: State<'_, AppState>,
+) -> Result<MigrationUndoResponse, AppError> {
+    if !confirm {
+        return Err(AppError {
+            code: "CONFIRMATION_REQUIRED".into(),
+            message: "Undoing the import needs an explicit confirmation.".into(),
+        });
+    }
+    let cli = state.kernel.cli().ok_or_else(|| AppError {
+        code: "MEMORY_KERNEL_UNAVAILABLE".into(),
+        message: "The memory kernel is not available.".into(),
+    })?;
+    let pages = crate::memory::imported_pages(&state.database)?;
+    let writer = crate::memory::CliPageWriter(cli);
+    let deleted = terminal_ai_memory_kernel::migration::undo(&pages, &writer).await?;
+    terminal_ai_persistence::dao::MemoryMigrationDao(&state.database).clear()?;
+    Ok(MigrationUndoResponse { deleted })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Memory kernel
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KernelStatusResponse {
+    pub status: KernelStatus,
+}
+
+/// Read the kernel's state.
+///
+/// Deliberately reads the supervisor's cached snapshot and performs no network call of its own.
+/// That is what keeps the kernel polled once per interval however many memory views are open
+/// (Constitution IV, SC-020).
+#[tauri::command]
+pub async fn get_memory_kernel_status(
+    state: State<'_, AppState>,
+) -> Result<KernelStatusResponse, AppError> {
+    Ok(KernelStatusResponse {
+        status: state.kernel.status(),
+    })
+}
+
+#[tauri::command]
+pub async fn start_memory_kernel(
+    state: State<'_, AppState>,
+) -> Result<KernelStatusResponse, AppError> {
+    state
+        .kernel
+        .handle(terminal_ai_memory_kernel::supervisor::Event::UserRequestedStart)
+        .await;
+    Ok(KernelStatusResponse {
+        status: state.kernel.status(),
+    })
+}
+
+/// Stop the kernel — only if this app started it.
+///
+/// The store is shared with whatever ai-memory the user runs themselves, so a server we merely
+/// attached to is theirs. Stopping it would be taking down someone else's process.
+#[tauri::command]
+pub async fn stop_memory_kernel(
+    state: State<'_, AppState>,
+) -> Result<KernelStatusResponse, AppError> {
+    if !state.kernel.status().owned {
+        return Err(AppError {
+            code: "MEMORY_KERNEL_NOT_OWNED".into(),
+            message: "This memory server was already running when Terminal AI started, so \
+                      Terminal AI will not stop it."
+                .into(),
+        });
+    }
+    state
+        .kernel
+        .handle(terminal_ai_memory_kernel::supervisor::Event::UserRequestedStop)
+        .await;
+    Ok(KernelStatusResponse {
+        status: state.kernel.status(),
+    })
+}
+
+#[tauri::command]
+pub async fn restart_memory_kernel(
+    state: State<'_, AppState>,
+) -> Result<KernelStatusResponse, AppError> {
+    if !state.kernel.status().owned {
+        return Err(AppError {
+            code: "MEMORY_KERNEL_NOT_OWNED".into(),
+            message: "This memory server was already running when Terminal AI started, so \
+                      Terminal AI will not restart it."
+                .into(),
+        });
+    }
+    state
+        .kernel
+        .handle(terminal_ai_memory_kernel::supervisor::Event::UserRequestedRestart)
+        .await;
+    Ok(KernelStatusResponse {
+        status: state.kernel.status(),
+    })
+}
+
+/// Change kernel settings. Takes effect on the next start.
+#[tauri::command]
+pub async fn set_memory_kernel_settings(
+    server_url: Option<String>,
+    binary_path: Option<String>,
+    auto_start: Option<bool>,
+    hybrid_search: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<KernelStatusResponse, AppError> {
+    let dao = SettingsDao(&state.database);
+    if let Some(url) = server_url {
+        crate::memory::validate_loopback(&url)?;
+        dao.set("memory_kernel_server_url", &serde_json::json!(url))?;
+    }
+    if let Some(path) = binary_path {
+        let canonical = std::fs::canonicalize(&path).map_err(|e| AppError {
+            code: "MEMORY_KERNEL_BINARY_MISSING".into(),
+            message: format!("No such file: {path} ({e})"),
+        })?;
+        if !canonical.is_file() {
+            return Err(AppError {
+                code: "MEMORY_KERNEL_BINARY_MISSING".into(),
+                message: "That path is not a file.".into(),
+            });
+        }
+        dao.set(
+            "memory_kernel_binary",
+            &serde_json::json!(canonical.to_string_lossy()),
+        )?;
+    }
+    if let Some(auto) = auto_start {
+        dao.set("memory_kernel_auto_start", &serde_json::json!(auto))?;
+    }
+    if let Some(hybrid) = hybrid_search {
+        // Enabling this is what authorises the kernel's ~87 MB local model download. The frontend
+        // must have disclosed that before calling (FR-062).
+        dao.set("memory_kernel_hybrid_search", &serde_json::json!(hybrid))?;
+    }
+    Ok(KernelStatusResponse {
+        status: state.kernel.status(),
+    })
+}
+
+/// Store or clear the kernel's bearer token.
+///
+/// Only needed when attaching to a server that requires one; loopback needs none. The value goes
+/// straight to the Keychain and is never returned by any command — status reports only whether one
+/// exists (FR-061).
+#[tauri::command]
+pub async fn set_memory_kernel_token(
+    token: Option<String>,
+    _state: State<'_, AppState>,
+) -> Result<OkResponse, AppError> {
+    let service = terminal_ai_platform_macos::keychain::SERVICE;
+    let account = crate::memory::TOKEN_ACCOUNT;
+    match token.filter(|t| !t.trim().is_empty()) {
+        Some(value) => terminal_ai_platform_macos::keychain::set(service, account, value.trim())
+            .map_err(AppError::internal)?,
+        None => terminal_ai_platform_macos::keychain::delete(service, account)
+            .map_err(AppError::internal)?,
+    }
+    Ok(OkResponse { ok: true })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
