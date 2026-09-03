@@ -1,6 +1,7 @@
 use crate::host::{InProcessHost, SessionExit};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use terminal_ai_domain::invisible_mode::DockCooldown;
 use terminal_ai_memory_kernel::runtime::Supervisor;
 use terminal_ai_persistence::Database;
 use terminal_ai_platform_macos::ResolvedEnvironment;
@@ -29,6 +30,10 @@ pub struct AppState {
     /// The app's data root. Wiring backups live under it, so a removal can restore a file the app
     /// merged into rather than clobbering the user's later edits.
     pub app_root: PathBuf,
+    /// When the app last put itself back in the Dock. A dock hide that lands within a second of a
+    /// show is silently dropped by tao (see `domain::invisible_mode`), so the invisible-mode
+    /// adapter waits this out instead of reporting a hide that never happened.
+    pub dock_cooldown: Mutex<DockCooldown>,
 }
 impl AppState {
     pub fn new(
@@ -67,6 +72,7 @@ impl AppState {
             memory_root,
             kernel,
             app_root,
+            dock_cooldown: Mutex::new(DockCooldown::new()),
         }
     }
 }

@@ -120,6 +120,7 @@ export interface AppSettings {
   scrollbackLines: number;
   memoryAutoCapture: boolean;
   usageRefreshSeconds: number;
+  invisibleMode: boolean;
 }
 export interface MigrationSkip {
   entryId: string;

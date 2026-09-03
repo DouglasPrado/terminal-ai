@@ -1,6 +1,7 @@
 mod commands;
 pub mod events;
 mod host;
+mod invisible_mode;
 mod memory;
 mod state;
 
@@ -46,6 +47,25 @@ pub fn run() {
     #[allow(clippy::expect_used)]
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // T008/FR-014: a window opened while the mode is already on must be invisible too. Tauri 2
+        // exposes no window-created event, but a new window always loads a page, and re-applying
+        // protection is idempotent.
+        .on_page_load(|webview, _| {
+            let handle = webview.app_handle();
+            let hidden = terminal_ai_persistence::dao::SettingsDao(
+                &handle.state::<state::AppState>().database,
+            )
+            .get("invisible_mode")
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_value::<bool>(value).ok())
+            .unwrap_or(false);
+            if hidden {
+                if let Some(window) = handle.get_webview_window(webview.label()) {
+                    let _ = invisible_mode::protect_window(&window, true);
+                }
+            }
+        })
         .manage(state::AppState::new(
             database,
             paths.cache.clone(),
@@ -147,6 +167,24 @@ pub fn run() {
             });
             // T018/FR-008: the window is created hidden (tauri.conf.json), so the persisted mode is
             // in force before anything is on screen — there is no frame to capture. The `show()`
+            // below is deliberately unconditional: a failure to apply must never leave the app
+            // running with no window and no Dock icon, which is the one unrecoverable state.
+            let boot_handle = app.handle().clone();
+            let hidden = terminal_ai_persistence::dao::SettingsDao(
+                &app.state::<state::AppState>().database,
+            )
+            .get("invisible_mode")
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_value::<bool>(value).ok())
+            .unwrap_or(false);
+            if hidden {
+                if let Err(error) =
+                    tauri::async_runtime::block_on(invisible_mode::apply(&boot_handle, true))
+                {
+                    tracing::warn!(message = %error.message, "invisible mode: not restored at launch");
+                }
+            }
             for window in app.webview_windows().values() {
                 let _ = window.show();
             }

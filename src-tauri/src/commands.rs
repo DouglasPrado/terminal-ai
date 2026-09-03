@@ -3032,6 +3032,7 @@ pub struct AppSettings {
     pub scrollback_lines: u32,
     pub memory_auto_capture: bool,
     pub usage_refresh_seconds: u64,
+    pub invisible_mode: bool,
 }
 
 #[derive(Serialize)]
@@ -3069,6 +3070,13 @@ fn read_settings(database: &terminal_ai_persistence::Database) -> Result<AppSett
                 .unwrap_or(serde_json::json!(300)),
         )
         .unwrap_or(300),
+        // Degrades to `false`, never to `true`: the app must not believe it is hidden because a
+        // read failed.
+        invisible_mode: serde_json::from_value(
+            dao.get("invisible_mode")?
+                .unwrap_or(serde_json::json!(false)),
+        )
+        .unwrap_or(false),
     })
 }
 
@@ -3100,11 +3108,13 @@ pub struct SettingsPatch {
     pub scrollback_lines: Option<u32>,
     pub memory_auto_capture: Option<bool>,
     pub usage_refresh_seconds: Option<u64>,
+    pub invisible_mode: Option<bool>,
 }
 
 #[tauri::command]
 pub async fn set_settings(
     patch: SettingsPatch,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SettingsResponse, AppError> {
     let mut settings = read_settings(&state.database)?;
@@ -3149,6 +3159,17 @@ pub async fn set_settings(
     if let Some(enabled) = patch.memory_auto_capture {
         settings.memory_auto_capture = enabled;
     }
+    // Applied before it is persisted, and persisted only if applying worked: a restart must never
+    // restore a mode that never took effect. On failure the adapter has already rolled back, so
+    // the stored and returned value stays `false` (FR-009).
+    if let Some(enabled) = patch.invisible_mode {
+        if terminal_ai_domain::invisible_mode::InvisibleMode::new(settings.invisible_mode)
+            .changes_to(enabled)
+        {
+            crate::invisible_mode::apply(&app, enabled).await?;
+            settings.invisible_mode = enabled;
+        }
+    }
     if let Some(seconds) = patch.usage_refresh_seconds {
         if seconds < 300 {
             return Err(AppError {
@@ -3176,16 +3197,41 @@ pub async fn set_settings(
         "usage_refresh_seconds",
         &serde_json::json!(settings.usage_refresh_seconds),
     )?;
+    dao.set(
+        "invisible_mode",
+        &serde_json::json!(settings.invisible_mode),
+    )?;
     Ok(SettingsResponse { settings })
 }
 
+#[derive(Serialize)]
+pub struct NotifyResponse {
+    pub ok: bool,
+    /// `false` when the invisible mode swallowed the banner. Reporting plain success here would
+    /// make the Settings test button lie about a notification nobody saw (FR-006).
+    pub delivered: bool,
+}
+
 #[tauri::command]
-pub async fn notify(title: String, body: String) -> Result<OkResponse, AppError> {
+pub async fn notify(
+    title: String,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<NotifyResponse, AppError> {
+    if read_settings(&state.database)?.invisible_mode {
+        return Ok(NotifyResponse {
+            ok: true,
+            delivered: false,
+        });
+    }
     let title = crate::events::sanitize_title(&title);
     let body = crate::events::sanitize_title(&body);
     tokio::task::spawn_blocking(move || terminal_ai_platform_macos::notify(&title, &body))
         .await
         .map_err(AppError::internal)?
         .map_err(AppError::internal)?;
-    Ok(OkResponse { ok: true })
+    Ok(NotifyResponse {
+        ok: true,
+        delivered: true,
+    })
 }

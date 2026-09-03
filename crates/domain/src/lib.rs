@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod host;
+pub mod invisible_mode;
 pub mod memory;
 
 use serde::{Deserialize, Serialize};
