@@ -71,6 +71,8 @@ async fn start() -> Option<(Sidecar, Duration)> {
         token: None,
         // Off, so the test does not pull an 87 MB model down a CI link.
         hybrid_search: false,
+        // Not needed here: these tests never install hooks.
+        hooks_dir: None,
     };
     let cli = KernelCli::new(config);
 

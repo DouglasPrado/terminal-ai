@@ -31,6 +31,12 @@ pub struct KernelConfig {
     /// When false the kernel starts with embeddings disabled, so its first run performs no
     /// unannounced ~87 MB model download.
     pub hybrid_search: bool,
+    /// The `hooks/<agent>/` bundle that ships with the kernel release.
+    ///
+    /// `install-hooks` needs it and searches a fixed list of locations for it — none of which a
+    /// sidecar next to a Tauri executable happens to match. Passing it explicitly is the difference
+    /// between the wiring flow working and failing with "could not locate hooks directory".
+    pub hooks_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

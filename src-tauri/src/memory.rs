@@ -189,6 +189,14 @@ pub fn build_config(
     .flatten()
     .map(terminal_ai_memory_kernel::token::AuthToken::new);
 
+    let hooks_dir = resolve_hooks_dir(&binary);
+    if hooks_dir.is_none() {
+        tracing::warn!(
+            "no ai-memory hooks bundle found next to the kernel binary; capture wiring will fail \
+             until scripts/fetch-ai-memory.sh is run"
+        );
+    }
+
     Some(KernelConfig {
         binary,
         server_url: settings.server_url.clone(),
@@ -196,7 +204,35 @@ pub fn build_config(
         data_dir: None,
         token,
         hybrid_search: settings.hybrid_search,
+        hooks_dir,
     })
+}
+
+/// Find the `hooks/<agent>/` bundle that ships with the kernel release.
+///
+/// The kernel searches for this itself, but none of the places it looks is where a Tauri sidecar
+/// ends up — which is how the wiring flow shipped broken. So the app finds it and passes
+/// `--hooks-dir` explicitly. `fetch-ai-memory.sh` puts it beside the binary, and Tauri's bundler
+/// puts declared resources in `Contents/Resources`.
+fn resolve_hooks_dir(binary: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = binary.parent() {
+        candidates.push(dir.join("hooks"));
+        // macOS bundle: the executable is in Contents/MacOS, resources in Contents/Resources.
+        candidates.push(dir.join("../Resources/hooks"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("hooks"));
+            candidates.push(dir.join("../Resources/hooks"));
+        }
+    }
+    candidates
+        .into_iter()
+        // Require a known agent subdirectory: a stray empty `hooks/` would satisfy a bare
+        // `is_dir()` and send us back to the same failure with a more confusing message.
+        .find(|path| path.join("claude-code").is_dir())
+        .and_then(|path| path.canonicalize().ok())
 }
 
 /// Reject anything that is not loopback (FR-063).
@@ -417,7 +453,13 @@ pub async fn preview(
     let before = target.as_deref().and_then(read_file);
     let stdout = run_wiring(
         cli,
-        &wiring::plan_args(agent, kind, server_url, target.as_deref()),
+        &wiring::plan_args(
+            agent,
+            kind,
+            server_url,
+            target.as_deref(),
+            cli.config().hooks_dir.as_deref(),
+        ),
     )
     .await?;
 
@@ -498,7 +540,13 @@ pub async fn apply(
 
     run_wiring(
         cli,
-        &wiring::apply_args(agent, kind, server_url, target.as_deref()),
+        &wiring::apply_args(
+            agent,
+            kind,
+            server_url,
+            target.as_deref(),
+            cli.config().hooks_dir.as_deref(),
+        ),
     )
     .await?;
 

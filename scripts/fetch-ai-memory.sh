@@ -25,7 +25,7 @@ TARGET="$DEST_DIR/ai-memory-$TRIPLE"
 # Idempotent: a correct binary already in place is left alone, so this is cheap to chain into a build.
 if [[ -x "$TARGET" ]]; then
   have="$("$TARGET" --version 2>/dev/null | awk '{print $2}' || true)"
-  if [[ "v${have}" == "$AI_MEMORY_VERSION" ]]; then
+  if [[ "v${have}" == "$AI_MEMORY_VERSION" && -d "$DEST_DIR/hooks/claude-code" ]]; then
     echo "ai-memory $AI_MEMORY_VERSION already present at $TARGET"
     exit 0
   fi
@@ -54,6 +54,26 @@ tar -xzf "$TMP/$ASSET" -C "$TMP"
 mkdir -p "$DEST_DIR"
 # Tauri requires the target-triple suffix on disk and references the path without it.
 install -m 0755 "$TMP/ai-memory" "$TARGET"
+
+# The hook scripts are part of the release, and `install-hooks` cannot run without them: it looks
+# for a `hooks/<agent>/` bundle and fails with "could not locate hooks directory" if there is none.
+# Shipping the binary alone made the wiring flow unusable, which is exactly the kind of gap a build
+# script is supposed to close.
+if [[ -d "$TMP/hooks" ]]; then
+  rm -rf "$DEST_DIR/hooks"
+  cp -R "$TMP/hooks" "$DEST_DIR/hooks"
+  chmod -R u+rwX,go+rX "$DEST_DIR/hooks"
+  find "$DEST_DIR/hooks" -name '*.sh' -exec chmod +x {} +
+  # Tauri copies `externalBin` next to the app executable but knows nothing about this directory,
+  # so mirror it where a `cargo tauri dev` build will find it. Harmless when target/ is absent.
+  if [[ -d "$ROOT/target/debug" ]]; then
+    rm -rf "$ROOT/target/debug/hooks"
+    cp -R "$DEST_DIR/hooks" "$ROOT/target/debug/hooks"
+  fi
+  echo "installed hook bundle ($(find "$DEST_DIR/hooks" -maxdepth 1 -type d | tail -n +2 | wc -l | tr -d ' ') agents)"
+else
+  echo "warning: the archive carried no hooks/ bundle; capture wiring will not work" >&2
+fi
 
 # MIT obliges us to redistribute the copyright notice with the binary.
 LICENSE_DIR="$ROOT/src-tauri/resources/third-party"

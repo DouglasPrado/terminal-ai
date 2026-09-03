@@ -180,8 +180,9 @@ pub fn plan_args(
     kind: WiringKind,
     server_url: &str,
     config_file: Option<&Path>,
+    hooks_dir: Option<&Path>,
 ) -> Vec<String> {
-    build_args(agent, kind, server_url, config_file, false)
+    build_args(agent, kind, server_url, config_file, hooks_dir, false)
 }
 
 /// The same command with `--apply`.
@@ -191,8 +192,9 @@ pub fn apply_args(
     kind: WiringKind,
     server_url: &str,
     config_file: Option<&Path>,
+    hooks_dir: Option<&Path>,
 ) -> Vec<String> {
-    build_args(agent, kind, server_url, config_file, true)
+    build_args(agent, kind, server_url, config_file, hooks_dir, true)
 }
 
 fn build_args(
@@ -200,6 +202,7 @@ fn build_args(
     kind: WiringKind,
     server_url: &str,
     config_file: Option<&Path>,
+    hooks_dir: Option<&Path>,
     apply: bool,
 ) -> Vec<String> {
     let mut args: Vec<String> = match kind {
@@ -221,6 +224,13 @@ fn build_args(
             if agent.supports_scoped_capture() {
                 // Claude-Code-only flag; passing it elsewhere makes the command exit 1.
                 args.push("--no-capture-prompts".into());
+            }
+            // Without this the command fails outright: it searches cwd, its own directory and a
+            // few system paths for a `hooks/` bundle, and a sidecar shipped beside a Tauri
+            // executable is in none of them.
+            if let Some(dir) = hooks_dir {
+                args.push("--hooks-dir".into());
+                args.push(dir.to_string_lossy().into_owned());
             }
             args
         }
@@ -444,11 +454,18 @@ mod tests {
             WiringKind::Hooks,
             "http://127.0.0.1:49374",
             None,
+            None,
         );
         assert!(claude.iter().any(|a| a == "--no-capture-prompts"));
 
         for agent in [Agent::Codex, Agent::OpenCode] {
-            let args = plan_args(agent, WiringKind::Hooks, "http://127.0.0.1:49374", None);
+            let args = plan_args(
+                agent,
+                WiringKind::Hooks,
+                "http://127.0.0.1:49374",
+                None,
+                None,
+            );
             assert!(
                 !args.iter().any(|a| a == "--no-capture-prompts"),
                 "{agent:?}"
@@ -460,18 +477,57 @@ mod tests {
     fn a_preview_never_carries_apply() {
         // The single most important property of the preview: it writes nothing.
         for kind in [WiringKind::Mcp, WiringKind::Hooks] {
-            let args = plan_args(Agent::ClaudeCode, kind, "http://127.0.0.1:49374", None);
+            let args = plan_args(
+                Agent::ClaudeCode,
+                kind,
+                "http://127.0.0.1:49374",
+                None,
+                None,
+            );
             assert!(!args.iter().any(|a| a == "--apply"), "{kind:?}");
-            let applied = apply_args(Agent::ClaudeCode, kind, "http://127.0.0.1:49374", None);
+            let applied = apply_args(
+                Agent::ClaudeCode,
+                kind,
+                "http://127.0.0.1:49374",
+                None,
+                None,
+            );
             assert!(applied.iter().any(|a| a == "--apply"), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn the_hooks_bundle_is_pointed_at_explicitly() {
+        // Regression: shipping the binary without its `hooks/` bundle, and letting the kernel search
+        // for it, made the whole wiring flow fail with "could not locate hooks directory" — none of
+        // the paths it tries is where a Tauri sidecar lives. Found by running the app, not by a test.
+        let dir = PathBuf::from("/Applications/Terminal AI.app/Contents/Resources/hooks");
+        let args = plan_args(
+            Agent::ClaudeCode,
+            WiringKind::Hooks,
+            "http://x",
+            None,
+            Some(&dir),
+        );
+        let index = args.iter().position(|a| a == "--hooks-dir").expect("flag");
+        assert_eq!(args[index + 1], dir.to_string_lossy());
+
+        // MCP registration needs no hook scripts, so it must not carry the flag.
+        let mcp = plan_args(
+            Agent::ClaudeCode,
+            WiringKind::Mcp,
+            "http://x",
+            None,
+            Some(&dir),
+        );
+        assert!(!mcp.iter().any(|a| a == "--hooks-dir"));
     }
 
     #[test]
     fn worktrees_fold_into_the_parent_project() {
         // Achieved with a flag rather than a `.ai-memory.toml` in the working tree, which would
         // make the worktree dirty and break `remove_worktree`.
-        let args = plan_args(Agent::ClaudeCode, WiringKind::Hooks, "http://x", None);
+        let args = plan_args(Agent::ClaudeCode, WiringKind::Hooks, "http://x", None, None);
         let index = args
             .iter()
             .position(|a| a == "--project-strategy")
