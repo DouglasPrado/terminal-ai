@@ -1,0 +1,6 @@
+async-trait v0.1.89 (proc-macro)
+serde v1.0.228
+terminal-ai-domain v0.1.0 (/Users/douglasprado/www/terminal-ai/crates/domain)
+thiserror v2.0.18
+tokio v1.52.3
+uuid v1.23.5
