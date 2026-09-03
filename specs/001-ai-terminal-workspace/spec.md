@@ -23,6 +23,23 @@ cores e o design system do github-visualize."
   history of sessions; clicking a past session resumes it via the CLI's native
   resume/continue; a brand-new pane always starts fresh.
 
+### Session 2026-07-15
+
+- Q: Should a user clicking a usage card be throttled by the 300s autonomous floor, or the
+  ~60s cache window? → A: The 300s floor governs only the single background poller. An explicit
+  user click is a distinct, user-initiated action bounded by the ~60s cache window (Principle IV
+  already names both). A throttled click must still refresh the card from cache and give feedback,
+  not appear inert.
+- Q: What shortcut moves keyboard focus between panes, and how does the next pane get chosen?
+  → A: Cmd/Ctrl+Shift+Arrow, selecting the spatially adjacent pane by geometry within the split
+  tree. (A bare arrow must keep going to the focused terminal, per Principle II. Plain Cmd+Arrow
+  was tried first but macOS consumes it for line-start/-end navigation before the app sees it, so
+  Shift was added — matching the existing Meta+Shift+D / Meta+Shift+Enter chords.)
+- Q: Reloading the page wipes the terminals — fix by reload-survival or by avoiding the reload?
+  → A: Avoid the destructive reload: intercept Cmd/Ctrl+R and refresh only the sidebar data in
+  place; the in-process PTYs and their panes are left untouched. (Reattaching after a *real*
+  WebView reload/crash is deferred — see docs/deferred.md.)
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Compose a workspace of AI-agent terminals (Priority: P1)
@@ -254,12 +271,52 @@ agents and never to `dashboard` agents, and search returns it by keyword.
   relaunch.
 - **FR-007**: The top bar MUST represent workspaces (not individual processes); users MUST be
   able to create, switch, and close workspaces.
+- **FR-031**: The system MUST let a user move keyboard focus between open panes with a
+  modifier + arrow shortcut (Cmd/Ctrl+Shift+Arrow on the target platform — plain Cmd+Arrow is
+  reserved by macOS for line navigation and never reaches the app), selecting the spatially
+  adjacent pane in the arrow's direction within the split tree. The shortcut MUST NOT reach the
+  focused terminal's PTY (Principle II — a bare arrow still goes to the shell/agent), and moving
+  focus MUST also move the OS keyboard focus into the target pane's terminal so typing lands there.
+- **FR-032**: A user MUST be able to refresh the sidebar's data (projects, usage, session
+  history) in place — without a full WebView reload, which would drop the frontend's session
+  bindings and orphan the still-running terminals. The app MUST intercept the platform reload
+  shortcut (Cmd/Ctrl+R) and perform this in-place refresh instead of reloading the page.
+  The platform reload chord MUST remain non-destructive, and a distinct chord (Shift) MUST be
+  available for a genuine WebView reload, since the app otherwise leaves the user no way to
+  reload the window.
 
 **Projects & worktrees**
 - **FR-008**: The system MUST discover git repositories under configured root directories and let
   users add a folder or clone by URL.
+  The listing MUST reflect the current state of those directories: a repository created outside
+  the app appears on the next listing, and one whose directory no longer exists (or is no longer
+  a git repository) MUST NOT be listed. Disappearing from the list MUST NOT delete the stored
+  project — its session history and workspaces survive a directory that is only temporarily
+  unavailable; forgetting a project stays an explicit action.
+
+- **FR-033**: Each workspace MUST be able to pin its own project folder; when pinned, that
+  workspace's project list MUST show exactly the repositories that folder itself contains — the
+  same one-level scan discovery performs, so a workspace pinned to a parent directory MUST NOT
+  list repositories that belong to a workspace pinned to a subdirectory of it, and switching
+  workspaces MUST re-list against the newly active workspace's folder. Creating a workspace MUST
+  ask for that folder through the operating system's native folder chooser; cancelling MUST leave
+  the workspace usable, falling back to the globally configured project roots. The chooser MUST be
+  driven from a typed command rather than by granting the WebView a file-dialog API (Principle I).
+  A pinned folder MUST be treated as an allowed root for the allowed-path check (FR-025).
+- **FR-037**: Users MUST be able to rename a workspace tab, and the name MUST persist across
+  restarts.
+- **FR-036**: Users MUST be able to give a project their own display name, and clear it to return
+  to the directory name. A user-chosen name MUST survive rediscovery, which keeps rewriting the
+  directory-derived name.
+- **FR-034**: Users MUST be able to archive a project so it disappears from the project list, and
+  restore it later from an archived view. Archiving MUST be lossless — the project, its history
+  and its worktrees are retained, and rediscovery MUST NOT un-archive it.
 - **FR-009**: For each project the system MUST display name, current branch, and clean/dirty
   status; and MUST show ahead/behind where available.
+  The project list itself shows only the project name and whether an agent is live in it; branch,
+  clean/dirty and worktree selection describe the workspace currently open and MUST be surfaced
+  for that open workspace rather than repeated per row.
+
 - **FR-010**: Users MUST be able to open a session whose working directory is a selected project
   or worktree.
 - **FR-011**: Selecting a project MUST NOT terminate sessions of other projects; background
@@ -268,6 +325,13 @@ agents and never to `dashboard` agents, and search returns it by keyword.
   assign a pane to a specific worktree.
 
 **Providers**
+- **FR-035**: A usage card's authentication state MUST distinguish: a stored token that is past
+  its own expiry (the credential is valid; running the provider CLI once refreshes it), a
+  credential the provider rejected or that is absent (a new login is required), and a state not
+  yet determined. A network, IO or parse failure MUST NOT be reported as an authentication
+  problem — it marks the reading stale and leaves the last known auth state untouched. The app
+  MUST NOT refresh another tool's token itself: rewriting the CLI's credential store risks
+  rotating a refresh token out from under its owner (Principle III).
 - **FR-013**: The system MUST detect each provider's executable and authentication state and show
   a clear message when a CLI is missing.
 - **FR-014**: The system MUST start each provider in the selected working directory with a
@@ -284,7 +348,10 @@ agents and never to `dashboard` agents, and search returns it by keyword.
   supported providers are Claude, Codex, and OpenCode (whose card reflects its underlying
   provider, OpenRouter in this setup).
 - **FR-018**: The system MUST honor a minimum refresh interval and cache results briefly to avoid
-  aggressive requests to rate-limited endpoints.
+  aggressive requests to rate-limited endpoints. The single background poller uses the 300s floor;
+  an explicit user-initiated refresh (e.g. clicking a usage card) is bounded instead by the ~60s
+  cache window, and MUST reflect the freshest cached snapshot with feedback even when the click is
+  throttled (no new network fetch).
 - **FR-019**: The system MUST display usage cards with consumption and reset timers, a compact
   single-line mode, an offline/last-known state, and an expired-auth state.
 
@@ -312,7 +379,10 @@ agents and never to `dashboard` agents, and search returns it by keyword.
 
 **Safety & boundaries**
 - **FR-025**: The frontend MUST NOT be able to execute arbitrary commands; all privileged actions
-  MUST go through validated, typed operations (trusted project, allowed path, provider, cwd, env).
+  MUST go through validated, typed operations (allowed path, provider, cwd, env). The allowed-path
+  check is the boundary on where a session may launch: every path MUST canonicalize under a
+  configured project root or one of its worktrees. There is no per-project trust flag — the roots
+  are nominated by the user, and discovery MUST scan those roots rather than a hardcoded path.
 - **FR-026**: Credentials and API keys MUST remain in the OS keychain or the provider CLIs' own
   files and MUST NOT be stored in the app's database or config.
 - **FR-027**: Terminal output MUST be treated as untrusted: no automatic execution of links,
@@ -348,8 +418,10 @@ agents and never to `dashboard` agents, and search returns it by keyword.
 - **SC-004**: Typing into any terminal feels instantaneous (no perceptible input lag), even while
   another pane produces heavy output.
 - **SC-005**: The interface becomes usable within about 2 seconds of launch.
-- **SC-006**: Each provider's usage is refreshed at most once per refresh window regardless of how
-  many terminals or cards are open, verifiable from activity logs.
+- **SC-006**: A single shared poller refreshes each provider at most once per autonomous refresh
+  window, and the number of refreshes never scales with how many terminals or cards are open (no
+  per-terminal/per-card polling), verifiable from activity logs. An explicit user-initiated refresh
+  is a separate, deliberate action bounded by the ~60s cache window, not the autonomous floor.
 - **SC-007**: With the network disconnected, usage cards continue to show the last known values
   rather than errors.
 - **SC-008**: Two agents can work on the same project concurrently via separate worktrees with no

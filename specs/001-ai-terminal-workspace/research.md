@@ -201,32 +201,43 @@ the user's clarification.
 
 ---
 
-## 11. Design tokens — ported from `github-visualize` into one Tailwind 4 `@theme`
+## 11. Design tokens — one Tailwind 4 `@theme`, night-city duotone
 
-**Decision**: Port the confirmed `github-visualize` palette **verbatim** into a single Tailwind 4
-`@theme` block (`src/styles/theme.css`) as the sole token source (Principle IV):
+**Decision**: A single Tailwind 4 `@theme` block (`src/styles/theme.css`) is the sole token source
+(Principle IV). The palette started as the `github-visualize` port and was retuned to a cyberpunk
+duotone: the neutral ramp now carries the same violet-blue tint as the base (the original neutral
+greys clashed with `#0b0a10`), and neon is expressed as emission rather than fill.
 
-| Token | Value | Origin |
+| Token | Value | Role |
 |---|---|---|
-| app background | `#0b0a10` | `bg-[#0b0a10]` on html/body |
-| panel | `#0a0a0a` @ 60% (`neutral-950/60`) | card bg |
-| border / hover / active | `#262626` / `#404040` / `#a21caf` | neutral-800 / neutral-700 / fuchsia-700 |
-| text / strong / muted | `#e5e5e5` / `#fafafa` / `#a3a3a3` | neutral-200 / 50 / 400 |
-| accent / strong / bg | `#e879f9` / `#f0abfc` / `#4a044e` @60% | fuchsia-400 / 300 / 950 |
-| data pink / cyan | `#f472b6` / `#22d3ee` | additions / removals |
-| success / warning / danger | `#34d399` / `#facc15` / `#ef4444` | CI/status |
-| font | `ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace` | `font-mono` |
+| app / elevated / panel | `#08070d` / `#0c0b13` / `#100e18` | terminal ground, sidebar+tab bar, cards |
+| raised / raised-hover | `#171423` / `#201c30` | control surface |
+| border-subtle / border / hover / active | `#171425` / `#241f36` / `#3b3357` / `#c026d3` | hairlines |
+| text / strong / muted / faint | `#e2e0ea` / `#fafafa` / `#9d97b3` / `#655e80` | ink |
+| accent / strong / line | `#e879f9` / `#f5b8ff` / fuchsia @35% | magenta, the lead |
+| cyan / strong | `#22d3ee` / `#67e8f9` | the answering neon |
+| data pink / success / warning / danger | `#f472b6` / `#34d399` / `#facc15` / `#ff4d6d` | data + status |
+| glow | ring @40% + `0 0 20px -6px` bloom | live state only |
+| fonts | `--font-ui` (SF Pro) chrome, `--font-mono` (SF Mono) data | two roles |
+| type scale | meta 12 · ui 13 · title 14 · heading 17 · readout 11 | replaces ad-hoc 9–12px |
+| radii | chip 4 · control 6 · panel 10 · modal 14 | one family |
 
-Per-agent color appears **only as small accents** (top strip, status dot, icon, active border),
-never filling a pane: Claude → fuchsia, Codex → cyan, OpenCode → violet `#a78bfa`, Shell → neutral.
-Low `rounded-lg` corners, thin borders, no large shadows/glow; `prefers-reduced-motion` respected.
+Neon marks **state**, never decoration: focused pane, active tab, primary action, a repo with a
+live agent. Per-agent color stays a small accent (brand mark, dot, active border), never a pane
+fill: Claude → fuchsia, Codex → cyan, OpenCode → violet `#a78bfa`, Shell → neutral. The agent marks
+are the official SVGL logos, inlined (CSP forbids remote assets) and drawn in `currentColor`.
+Texture is two utilities: `.scanlines` on chrome only, `.hud-grid` on surfaces awaiting input.
+`prefers-reduced-motion` respected.
 
-**Rationale**: The values are confirmed from the real repo (including the exact `#0b0a10`), so the
-app reads as the same design system. One token source prevents visual drift.
+**Rationale**: One token source prevents visual drift. Tinting the neutrals to match the base and
+pinning a five-step type scale fixed the misalignment that ad-hoc `text-[9px]`–`text-xs` sizes and
+neutral-grey borders produced against a violet ground.
 
-**Alternatives considered**: *Re-deriving colors by eye* — drift risk. *Copying `github-visualize`
-components* — impossible: that repo is Rails/Stimulus/canvas, no React tree to reuse — only tokens
-transfer.
+**Alternatives considered**: *Keeping the verbatim `github-visualize` neutrals* — their pure greys
+read as a different material next to `#0b0a10`. *A single acid accent on near-black* — the default
+"cyberpunk" look; the magenta/cyan duotone is both more specific and already implied by the data
+colors. *All-mono chrome* — mono at 11px has poor optical alignment for UI labels; mono now carries
+data and HUD readouts, where it means something.
 
 ---
 

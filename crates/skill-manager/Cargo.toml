@@ -1,0 +1,11 @@
+[package]
+name = "terminal-ai-skill-manager"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+terminal-ai-domain = { path = "../domain" }
+[lints]
+workspace = true
+

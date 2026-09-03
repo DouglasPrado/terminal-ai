@@ -6,9 +6,9 @@ Operating manual for any Claude/agent session working in this repository. Read t
 multiple AI-agent terminals (Claude, Codex, OpenCode, shell) side by side, organized by cloned
 project and git worktree, with a sidebar for projects, skills, memory and provider-usage cards.
 
-> **Current state (2026-07-14):** Specs are complete; **implementation has not started**. The
-> code tree described in *Architecture* does not exist yet — the next step is Phase 1 (Setup) of
-> `specs/001-ai-terminal-workspace/tasks.md`. Keep this note updated as phases land.
+> **Current state (2026-07-14):** The v1 specification is fully implemented through Phase 10;
+> all tasks and acceptance gates are complete. See `docs/validation-2026-07-14.md` for evidence
+> and `docs/deferred.md` for the explicitly out-of-scope daemon/release follow-up.
 
 ---
 
@@ -24,16 +24,16 @@ implements them.
 
 ### The workflow (in order)
 
-| Step | Skill | When / what it produces |
-|------|-------|-------------------------|
-| 1. Constitution | `/speckit-constitution` | Establish/amend project principles → `.specify/memory/constitution.md`. Rare (only when principles change). |
-| 2. Specify | `/speckit-specify` | The **what & why** (user stories, FRs, SCs) → `specs/NNN-*/spec.md`. No tech details. |
-| 3. Clarify | `/speckit-clarify` | Resolve ambiguities with ≤5 targeted questions → `## Clarifications` in the spec. **Run before plan.** |
-| 4. Plan | `/speckit-plan` | The **how** (stack, architecture) → `plan.md` + `research.md`, `data-model.md`, `contracts/`, `quickstart.md`. Must pass the Constitution Check gate. |
-| 5. Tasks | `/speckit-tasks` | Dependency-ordered, story-grouped `tasks.md`. |
-| 6. Analyze | `/speckit-analyze` | Read-only consistency check across spec/plan/tasks/constitution. **Resolve CRITICAL findings before implementing.** |
-| 7. Implement | `/speckit-implement` | Execute tasks. Work story-by-story; validate each checkpoint via `quickstart.md`. |
-| — Converge | `/speckit-converge` | Re-assess the codebase vs spec/plan/tasks and append remaining work. |
+| Step            | Skill                   | When / what it produces                                                                                                                               |
+| --------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Constitution | `/speckit-constitution` | Establish/amend project principles → `.specify/memory/constitution.md`. Rare (only when principles change).                                           |
+| 2. Specify      | `/speckit-specify`      | The **what & why** (user stories, FRs, SCs) → `specs/NNN-*/spec.md`. No tech details.                                                                 |
+| 3. Clarify      | `/speckit-clarify`      | Resolve ambiguities with ≤5 targeted questions → `## Clarifications` in the spec. **Run before plan.**                                                |
+| 4. Plan         | `/speckit-plan`         | The **how** (stack, architecture) → `plan.md` + `research.md`, `data-model.md`, `contracts/`, `quickstart.md`. Must pass the Constitution Check gate. |
+| 5. Tasks        | `/speckit-tasks`        | Dependency-ordered, story-grouped `tasks.md`.                                                                                                         |
+| 6. Analyze      | `/speckit-analyze`      | Read-only consistency check across spec/plan/tasks/constitution. **Resolve CRITICAL findings before implementing.**                                   |
+| 7. Implement    | `/speckit-implement`    | Execute tasks. Work story-by-story; validate each checkpoint via `quickstart.md`.                                                                     |
+| — Converge      | `/speckit-converge`     | Re-assess the codebase vs spec/plan/tasks and append remaining work.                                                                                  |
 
 ### Rules of the flow
 
@@ -54,19 +54,26 @@ implements them.
 task, and line of code. Summary + practical guardrails (**MUST**/**NEVER**):
 
 1. **Typed Rust Boundary** — the frontend calls only typed Tauri commands; each validates
-   trust/path/provider/cwd/env. **NEVER** expose a generic `execute_any_command(string)`.
+   path/provider/cwd/env, and every path MUST canonicalize under a configured project root.
+   **NEVER** expose a generic `execute_any_command(string)`.
 2. **Native PTY Fidelity** — every session is a real PTY (`portable-pty`); output streamed in
    time-batched blocks over an `ipc::Channel`. **NEVER** capture agent stdout through a non-PTY pipe.
 3. **Non-Destructive & Credential-Safe** — skills/memory apply via preview→diff→apply→record→
    remove-only-created. **NEVER** put secrets in `app.db`/`config.toml` (Keychain / CLI files only).
    Treat terminal output as untrusted (no auto-link exec, sanitize titles, bound scrollback).
+   Capture is OFF by default and opt-in **per project** — this covers agent-lifecycle capture
+   (prompts, tool calls, session/subagent events via hooks), not just raw terminal output; a repo
+   that has not opted in emits **nothing**.
 4. **Single Source of Truth** — one usage poller per provider (≥300s floor, ~60s cache).
    **NEVER** poll per-terminal/per-card. One design-token source: `src/styles/theme.css` `@theme`.
 5. **Layout as a Persisted Tree** — arbitrary split tree, persisted and restored losslessly.
 6. **Isolation & Resilience** — one session's failure never blocks the UI; concurrent same-repo
    agents use separate git worktrees.
-7. **Swappable Session Host** — all session ops go through the `SessionHost` trait so the v1
-   in-process runtime can be replaced by a daemon later **without UI/command changes**.
+7. **Swappable Session & Memory Hosts** — all session ops go through the `SessionHost` trait and
+   all memory ops through the `MemoryKernel` trait, so the v1 in-process runtime can be replaced by
+   a daemon (and the memory kernel by a sidecar, an attached external server, or a daemon) later
+   **without UI/command changes**. Ownership rule: supervise only the process the app started —
+   **NEVER** kill or restart a server it merely found running.
 
 If a requirement conflicts with a principle, change the requirement — or amend the constitution
 explicitly via `/speckit-constitution`. Do not silently dilute a principle.
@@ -143,6 +150,7 @@ Change a contract in the spec **before** changing its implementation.
 ## 3. Stack conventions
 
 **Rust**
+
 - Async on **tokio**; run blocking SQLite (`rusqlite`, `bundled`, FTS5) via `spawn_blocking`.
 - Errors: `thiserror` per crate; map to `HostError` at the command boundary. No `unwrap()` in
   non-test code paths that can fail at runtime.
@@ -150,6 +158,7 @@ Change a contract in the spec **before** changing its implementation.
 - Migrations: `refinery`, sequential SQL in `persistence`. Never mutate a shipped migration.
 
 **Frontend (React + TS)**
+
 - One xterm.js instance per pane, kept in a `ref` — **never** in React state (perf).
 - Global state in **Zustand** stores under `src/stores/`; keep components thin.
 - All backend calls go through `src/lib/ipc.ts`. No ad-hoc `invoke` scattered in components.

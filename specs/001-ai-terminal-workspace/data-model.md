@@ -36,14 +36,17 @@ CREATE TABLE projects (
     color             TEXT,                          -- accent hex, optional
     default_provider  TEXT,                          -- provider_profiles.id
     default_layout_id TEXT REFERENCES layout_presets(id) ON DELETE SET NULL,
-    trusted           INTEGER NOT NULL DEFAULT 0,    -- 0/1; gates automation (Principle I)
+    trusted           INTEGER NOT NULL DEFAULT 0,    -- retired; never read or written
     last_opened_at    TEXT,
+    archived_at       TEXT,                          -- V003; NULL = active (FR-034)
+    display_name      TEXT,                          -- V004; user-chosen name (FR-036)
     created_at        TEXT NOT NULL
 );
 CREATE INDEX idx_projects_last_opened ON projects(last_opened_at DESC);
 ```
-Relationships: root of the graph. `trusted=0` means only a plain shell may open — no provider
-automation, startup scripts, or local-config loading until the user trusts the project.
+Relationships: root of the graph. `trusted` is retired as of constitution 2.0.0 — the column is
+kept only to avoid a destructive migration (see `docs/deferred.md`). What bounds a launch is the
+allowed-root check: a project's path must canonicalize under a configured project root.
 
 ### 2. `worktrees`
 A git worktree (branch on its own directory) belonging to a project.
@@ -73,6 +76,7 @@ CREATE TABLE workspaces (
     title            TEXT NOT NULL,
     position         INTEGER NOT NULL DEFAULT 0,     -- tab order in the top bar
     active_layout_id TEXT REFERENCES workspace_layouts(id) ON DELETE SET NULL,
+    root_path        TEXT,                           -- V003; pinned project folder (FR-033)
     created_at       TEXT NOT NULL
 );
 CREATE INDEX idx_workspaces_project ON workspaces(project_id);

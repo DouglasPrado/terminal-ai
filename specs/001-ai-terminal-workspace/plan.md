@@ -60,7 +60,7 @@ concurrent PTYs. Delivery order: core P1–P3 (terminals+layout, projects, usage
 
 | # | Principle | Gate | Status |
 |---|-----------|------|--------|
-| I | Typed Rust Boundary | Frontend calls only typed Tauri commands; every command validates trust/path/provider/cwd/env; no `execute_any_command`. | ✅ PASS — contracts define a closed command set (`contracts/tauri-commands.md`). |
+| I | Typed Rust Boundary | Frontend calls only typed Tauri commands; every command validates path/provider/cwd/env; no `execute_any_command`. | ✅ PASS — contracts define a closed command set (`contracts/tauri-commands.md`). |
 | II | Native PTY Fidelity | Every session is a real PTY; output streamed in batched blocks; no stdout-pipe wrapper. | ✅ PASS — `portable-pty` + Tauri Channel streaming (`research.md`). |
 | III | Non-Destructive & Credential-Safe | Skills/memory apply via preview→diff→record→remove-only-created; secrets in Keychain/CLI files; output untrusted. | ✅ PASS — data-model separates state from secrets; skill/memory sync recorded in `data-model.md`. |
 | IV | Single Source of Truth | One usage poller per provider (≥300s, 60s cache); one `@theme` token source. | ✅ PASS — single `UsagePoller`; tokens in `src/styles/theme.css`. |

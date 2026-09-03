@@ -1,0 +1,12 @@
+[package]
+name = "terminal-ai-pty-runtime"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+portable-pty.workspace = true
+nix.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+terminal-ai-domain = { path = "../domain" }
+[lints]
+workspace = true

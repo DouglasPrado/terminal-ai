@@ -1,0 +1,12 @@
+[package]
+name = "terminal-ai-project-manager"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+git2.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+terminal-ai-domain = { path = "../domain" }
+[lints]
+workspace = true
+

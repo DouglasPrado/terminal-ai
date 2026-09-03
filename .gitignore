@@ -16,9 +16,12 @@ src-tauri/gen/
 # --- Node / pnpm / Vite ---
 node_modules/
 dist/
+build/
 dist-ssr/
 .vite/
+*.tsbuildinfo
 *.local
+.env*
 
 # --- Build & logs ---
 *.log
@@ -37,6 +40,8 @@ AITerminal/
 .vscode/*
 !.vscode/extensions.json
 *.swp
+*.tmp
+Thumbs.db
 
 # --- Spec Kit: keep specs & templates tracked; ignore only local runtime state ---
 # (.specify/ IS tracked; nothing to ignore there by default)

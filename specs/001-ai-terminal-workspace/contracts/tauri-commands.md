@@ -6,9 +6,8 @@ handler in `src-tauri` that delegates to a crate and, before acting, runs the **
 listed for it. Anything not in this catalog is not callable from the frontend.
 
 **Global validation applied to every command** (in addition to per-command notes):
-- The referenced `projectId` (if any) MUST exist and be marked *trusted* for actions that
-  launch processes, run init scripts, or read local config; untrusted projects may only open a
-  plain shell.
+- The referenced `projectId` (if any) MUST exist. There is no per-project trust gate: a project
+  reachable from a configured root is launchable. The allowed-path rule below is the boundary.
 - Any filesystem `path`/`cwd` MUST resolve (canonicalized, symlinks followed) to a location
   under a configured project root or worktree directory. Paths escaping via `..` are rejected.
 - Any `providerId` MUST be a known built-in (`claude` | `codex` | `opencode` | `shell`) or a
@@ -35,7 +34,7 @@ Purpose: start a PTY session for a provider and open its output channel.
 // response
 { sessionId: string, pid: number, title: string, state: SessionState }
 ```
-Validation: trusted project (unless `providerId === "shell"`); `cwd` derived from
+Validation: `cwd` derived from
 project/worktree is inside an allowed root; provider known & its executable detected; env
 resolved. If `resume` is set, the provider MUST advertise a matching `ResumeCapability`.
 
@@ -117,7 +116,7 @@ returned.
 
 ### `list_workspaces`
 ```ts
-{} → { workspaces: Array<{ id: string, title: string, projectId?: string, active: boolean }> }
+{} → { workspaces: Array<{ id: string, title: string, projectId?: string, active: boolean, rootPath?: string }> }
 ```
 Validation: none.
 
@@ -136,14 +135,20 @@ Validation: workspace exists; live sessions in it are closed and recorded to his
 ### `save_layout`
 Purpose: persist a workspace's split tree (Principle V — lossless).
 ```ts
-{ workspaceId: string, layout: LayoutNode } → { ok: true }
+{ workspaceId: string, layout: LayoutNode,
+  paneBindings: Record<string, { providerId?: string, projectId?: string,
+    worktreeId?: string, title?: string }> } → { ok: true }
 ```
-Validation: `layout` conforms to `layout-node.schema.json`; every `paneId` maps to a known
-pane; `sizes.length === children.length`.
+Validation: `layout` conforms to `layout-node.schema.json`; `sizes.length === children.length`;
+each binding key is a `paneId` in the layout; provider/project/worktree ids are known. Pane rows
+are created or updated in the same persistence operation as the layout so provider assignments
+round-trip losslessly on first save as well as later saves.
 
 ### `load_layout`
 ```ts
-{ workspaceId: string } → { layout: LayoutNode }
+{ workspaceId: string } → { layout: LayoutNode,
+  paneBindings: Record<string, { providerId?: string, projectId?: string,
+    worktreeId?: string, title?: string }> }
 ```
 Validation: workspace exists.
 
@@ -171,12 +176,54 @@ started on user action.
 
 ### `list_projects`
 ```ts
-{} → { projects: Array<ProjectSummary> }
+{ workspaceId?: string } → { projects: Array<ProjectSummary> }
 // ProjectSummary
 { id: string, name: string, path: string, remote?: string, branch?: string,
-  dirty: boolean, ahead: number, behind: number, trusted: boolean,
-  activeSessions: number, color?: string }
+  dirty: boolean, ahead: number, behind: number,
+  activeSessions: number, color?: string, archived: boolean }
 ```
+Validation: when `workspaceId` names a workspace with a pinned `rootPath`, discovery and the
+returned list are both scoped to that folder; otherwise the configured project roots apply
+(FR-033). Archived projects are returned with `archived: true` so the caller can show them in a
+separate view (FR-034).
+
+### `set_project_archived`
+```ts
+{ projectId: string, archived: boolean } → { ok: true }
+```
+Validation: the project exists. Archiving only sets `projects.archived_at`; the row, its history
+and its worktrees are untouched, and rediscovery does not clear the flag (FR-034).
+
+### `pick_directory`
+```ts
+{} → string | null
+```
+Validation: opens the OS folder chooser and returns the chosen absolute path, or `null` when
+cancelled. Picking alone grants nothing — the path still has to pass `set_workspace_root` (or
+`add_project_folder`) to take effect. The dialog runs Rust-side; the WebView is never granted the
+dialog plugin's JS API (Principle I).
+
+### `set_project_name`
+```ts
+{ projectId: string, name?: string } → { ok: true }
+```
+Validation: the project exists; a blank or omitted `name` clears the override. Stored in
+`projects.display_name` so discovery's rewrite of `projects.name` cannot clobber it (FR-036).
+
+### `rename_workspace`
+```ts
+{ workspaceId: string, title: string } → { ok: true }
+```
+Validation: the workspace exists; a blank title is rejected (`INVALID_NAME`). Persists to
+`workspaces.title` (FR-037).
+
+### `set_workspace_root`
+```ts
+{ workspaceId: string, path?: string } → { rootPath?: string }
+```
+Validation: `path` expands `~`, MUST canonicalize to an existing directory (`PATH_NOT_FOUND` /
+`PATH_NOT_A_DIRECTORY` otherwise). Omitting `path` clears the pin. A pinned root joins the
+allowed-root set used by the allowed-path check (FR-033, FR-025).
 
 ### `add_project_folder`
 ```ts
@@ -190,7 +237,7 @@ explicitly picked via the native folder dialog.
 { url: string, destRoot: string, name?: string } → { project: ProjectSummary }
 ```
 Validation: `destRoot` is a configured root; `url` is a well-formed git URL; clone runs via
-`git2` (no arbitrary shell). New project starts **untrusted**.
+`git2` (no arbitrary shell).
 
 ### `remove_project`
 ```ts
@@ -204,21 +251,11 @@ Validation: `deleteFiles` is always `false` in v1 (removes from list only; never
                           worktrees: Array<{ id: string, branch: string, path: string }> }
 ```
 
-### `set_project_trust`
-```ts
-{ projectId: string, trusted: boolean } → { ok: true }
-```
-Validation: explicit user action (trust prompt). Trust gates automations per Principle I.
-
----
-
-## Worktrees
-
 ### `create_worktree`
 ```ts
 { projectId: string, branch: string, createBranch: boolean } → { worktree: { id, branch, path } }
 ```
-Validation: project trusted; branch not already checked out elsewhere; target dir created
+Validation: branch not already checked out elsewhere; target dir created
 under the project's worktree root.
 
 ### `list_worktrees`
@@ -281,11 +318,17 @@ Purpose: read the latest shared usage snapshot (no network — Principle IV).
 Validation: none. Returns the last snapshot even when offline.
 
 ### `refresh_usage`
-Purpose: request a poll now (still bounded by the 300s floor / 60s cache).
+Purpose: a user-initiated poll-now for the given provider (or all). Because it is an explicit
+user action — not autonomous per-card polling — it is bounded by the ~60s cache window, not the
+300s autonomous floor (Principle IV: "≥300s floor, ~60s cache"). The single background poller
+still runs on the 300s floor. `scheduled` is `true` when a network fetch was actually issued;
+`nextAllowedAt` is when the next user refresh of that provider will be honored (last attempt + 60s).
 ```ts
 { providerId?: string } → { scheduled: boolean, nextAllowedAt: string }
 ```
-Validation: honors the minimum-interval floor; coalesces concurrent requests.
+Validation: honors the ~60s cache window per provider; coalesces concurrent requests. The caller
+should reflect the returned snapshot immediately (re-read via `get_usage`) so a throttled click
+(`scheduled: false`) still shows the freshest cached values instead of appearing inert.
 
 ---
 
