@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use terminal_ai_persistence::Database;
 use terminal_ai_platform_macos::ResolvedEnvironment;
 use terminal_ai_usage_core::{
-    adapters::{AnthropicAdapter, CodexAdapter, OpenRouterAdapter},
+    adapters::{AnthropicAdapter, CodexAdapter, OpenCodeAdapter},
     poller::UsagePoller,
     UsageAdapter,
 };
@@ -38,7 +38,7 @@ impl AppState {
         let adapters: Vec<Arc<dyn UsageAdapter>> = vec![
             Arc::new(AnthropicAdapter::new(client.clone())),
             Arc::new(CodexAdapter::new(client.clone())),
-            Arc::new(OpenRouterAdapter::new(client)),
+            Arc::new(OpenCodeAdapter::new()),
         ];
         Self {
             database,

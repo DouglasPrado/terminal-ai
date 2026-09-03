@@ -1,6 +1,6 @@
 use serde_json::json;
 use terminal_ai_usage_core::{
-    adapters::{parse_anthropic, parse_codex, parse_openrouter, OpenRouterAdapter},
+    adapters::{parse_anthropic, parse_codex, OpenCodeAdapter},
     UsageAdapter,
 };
 
@@ -78,46 +78,53 @@ fn parses_codex_windows() {
     "###);
 }
 
-#[test]
-fn parses_openrouter_balance() {
-    let card = parse_openrouter(&json!({"data": {"usage": 12.5, "limit": 50.0}}))
-        .expect("valid OpenRouter response");
-    insta::assert_json_snapshot!(card, @r###"
-    {
-      "label": "OpenCode · OpenRouter",
-      "lines": [
-        {
-          "label": "Uso",
-          "value": "$12.50",
-          "pct": 25.0
-        },
-        {
-          "label": "Saldo",
-          "value": "$37.50"
-        }
-      ],
-      "auth": "ok",
-      "stale": false
-    }
-    "###);
-}
-
+/// OpenCode has no quota endpoint; usage comes from the token counts it records for every
+/// message in its own database. The adapter must read that read-only and survive rows whose
+/// `data` is not the shape it expects.
 #[tokio::test]
-async fn openrouter_adapter_fetches_once_and_parses() {
-    let mut server = mockito::Server::new_async().await;
-    let mock = server
-        .mock("GET", "/api/v1/auth/key")
-        .match_header("authorization", "Bearer test-key")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(r#"{"data":{"usage":1.25,"limit":10}}"#)
-        .expect(1)
-        .create_async()
-        .await;
-    let adapter = OpenRouterAdapter::new(reqwest::Client::new())
-        .with_base_url(server.url())
-        .with_api_key("test-key");
-    let card = adapter.fetch().await.expect("mocked fetch succeeds");
-    assert_eq!(card.lines[0].value, "$1.25");
-    mock.assert_async().await;
+async fn opencode_adapter_sums_tokens_from_the_local_database() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("opencode.db");
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let connection = rusqlite::Connection::open(&path).expect("create db");
+        connection
+            .execute(
+                "CREATE TABLE message (id TEXT PRIMARY KEY, time_created INTEGER NOT NULL, data TEXT NOT NULL)",
+                [],
+            )
+            .expect("schema");
+        let insert = |id: &str, created: i64, data: &str| {
+            connection
+                .execute(
+                    "INSERT INTO message(id,time_created,data) VALUES(?1,?2,?3)",
+                    rusqlite::params![id, created, data],
+                )
+                .expect("insert");
+        };
+        insert("a", now, r#"{"tokens":{"input":1200,"output":300}}"#);
+        insert("b", now, r#"{"tokens":{"input":800,"output":200}}"#);
+        // Outside the 24h window: counted in 7d only.
+        insert(
+            "c",
+            now - 1000 * 60 * 60 * 48,
+            r#"{"tokens":{"input":5,"output":5}}"#,
+        );
+        // Rows without token data must be skipped, not abort the read.
+        insert("d", now, r#"{"role":"user"}"#);
+        insert("e", now, "not json at all");
+    }
+    let card = OpenCodeAdapter::new()
+        .with_database_path(path)
+        .fetch()
+        .await
+        .expect("reads the local database");
+    assert_eq!(card.label, "OpenCode");
+    assert_eq!(card.lines[0].label, "24h");
+    assert_eq!(card.lines[0].value, "2,0k \u{2191} 500 \u{2193}");
+    assert_eq!(card.lines[1].label, "7d");
+    assert_eq!(card.lines[1].value, "2,0k \u{2191} 505 \u{2193}");
+    assert_eq!(card.lines[2].value, "3");
+    // Nothing is authenticated: the reading is local.
+    assert_eq!(card.auth, terminal_ai_usage_core::AuthState::Ok);
 }

@@ -245,7 +245,7 @@ fn provider_label(id: &str) -> &str {
     match id {
         "claude" => "Claude",
         "codex" => "Codex",
-        "opencode" => "OpenCode · OpenRouter",
+        "opencode" => "OpenCode",
         _ => id,
     }
 }

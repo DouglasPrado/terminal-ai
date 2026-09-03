@@ -8,6 +8,7 @@ chrono.workspace = true
 directories.workspace = true
 fs2.workspace = true
 reqwest.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -16,5 +17,6 @@ terminal-ai-domain = { path = "../domain" }
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
 mockito = "1"
+tempfile = "3"
 [lints]
 workspace = true
