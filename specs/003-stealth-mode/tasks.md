@@ -241,6 +241,15 @@ Written during `/speckit-implement`. Deviations from the task text, and why:
   branches as the failures they describe, and splitting them would have meant editing the file
   twice for no benefit.
 
+### Fixed after measurement, 2026-09-03
+
+Running the automated part of the acceptance (capture proof + cold start) surfaced a real defect in
+T007's cooldown, which the unit tests could not have caught because it lives in the gap between two
+clocks. Two toggles 1.001s apart left the app protected from capture but still in the Dock, with the
+control reading "on" — the half-applied state FR-009 forbids and FR-016 is supposed to prevent.
+Fixed by a 500 ms margin (`DOCK_HIDE_WAIT`) and a gate serializing changes; research R3 records the
+mechanism and a regression test pins the observed 1.001s case.
+
 ### Still open — needs the app running on a real Mac
 
 T016, T021, T022, T024 and T026 are the observed acceptance gates. They cannot be discharged from

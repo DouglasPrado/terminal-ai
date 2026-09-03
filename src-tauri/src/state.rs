@@ -34,6 +34,10 @@ pub struct AppState {
     /// show is silently dropped by tao (see `domain::invisible_mode`), so the invisible-mode
     /// adapter waits this out instead of reporting a hide that never happened.
     pub dock_cooldown: Mutex<DockCooldown>,
+    /// Serializes invisible-mode changes. Without it two toggles can interleave: the second reads
+    /// the cooldown before the first has recorded its transition, and the wait it computes is
+    /// against a stale instant. One change at a time is the only way the cooldown means anything.
+    pub invisible_mode_gate: tokio::sync::Mutex<()>,
 }
 impl AppState {
     pub fn new(
@@ -73,6 +77,7 @@ impl AppState {
             kernel,
             app_root,
             dock_cooldown: Mutex::new(DockCooldown::new()),
+            invisible_mode_gate: tokio::sync::Mutex::new(()),
         }
     }
 }

@@ -58,9 +58,21 @@ silently dropped and the Dock icon stays, while the control reads "on". That is 
 half-applied state Clarification Q1 forbids.
 
 **Decision**: the command awaits the remaining cooldown before applying a hide. The arithmetic is
-pure and lives in `domain::stealth::DockCooldown` (time injected, unit-tested); the wait is a
-`tokio::time::sleep` inside the async command, never a blocking sleep — Principle VI. Worst case adds
-~1.1s, inside SC-004's 2s budget.
+pure and lives in `domain::invisible_mode::DockCooldown` (time injected, unit-tested); the wait is a
+`tokio::time::sleep` inside the async command, never a blocking sleep — Principle VI.
+
+**Measured 2026-09-03, and the first version of this was wrong.** Waiting exactly one second is not
+enough. `set_dock_visibility` does not perform the transition: it posts a message to the event loop
+and returns, so tao stamps its own "last show" later than we stamp ours, by however long the event
+loop took. Two toggles 1.001s apart — past our one-second guard, still inside tao's — produced
+exactly the half-applied state this feature must never reach: the window excluded from capture, the
+app still owning the menu bar, the control reading "on".
+
+Two changes followed. A **500 ms margin** on top of the debounce (`DOCK_HIDE_WAIT`), covering the
+event-loop gap between the two stamps; and a **gate** (`AppState::invisible_mode_gate`) held across
+the whole change, because two overlapping toggles would each read the cooldown before the other
+recorded its transition and both would wait against a stale instant. Worst case is now ~1.5s, still
+inside SC-004's 2s budget.
 
 **Consequence 2 — startup is safe**: checked whether the same debounce would silently swallow the
 hide we apply at launch. It does not. At launch tao calls `set_dock_visibility` **only when the

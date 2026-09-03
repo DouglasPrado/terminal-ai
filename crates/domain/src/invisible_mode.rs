@@ -15,6 +15,23 @@ use std::time::{Duration, Instant};
 /// UI says the app is hidden.
 pub const DOCK_TRANSITION_COOLDOWN: Duration = Duration::from_millis(1_000);
 
+/// Extra slack on top of the cooldown, and why waiting exactly one second is not enough.
+///
+/// The two timestamps involved come from different moments. `set_dock_visibility` does not perform
+/// the transition — it posts a message to the event loop and returns — so tao stamps its own "last
+/// show" only when the main thread gets to it. Ours is always the earlier of the two, by however
+/// long the event loop took. Waiting exactly one second from our stamp can therefore still land
+/// inside tao's window, where the hide is dropped in silence and the app stays in the Dock while
+/// the UI reports it hidden.
+///
+/// Measured on 2026-09-03: two toggles 1.001s apart left exactly that half-applied state — the
+/// window excluded from capture, the app still owning the menu bar.
+pub const DOCK_TRANSITION_MARGIN: Duration = Duration::from_millis(500);
+
+/// What a hide must actually wait for after a show: tao's debounce plus the slack above.
+pub const DOCK_HIDE_WAIT: Duration =
+    DOCK_TRANSITION_COOLDOWN.saturating_add(DOCK_TRANSITION_MARGIN);
+
 /// The whole feature's state.
 ///
 /// A newtype rather than a bare `bool` so the transition rules have somewhere to live, and so a
@@ -61,14 +78,14 @@ impl DockCooldown {
 
     /// How long a hide requested at `now` must wait to actually take effect.
     ///
-    /// Zero when no show is pending, and zero once the full cooldown has elapsed. `now` is a
+    /// Zero when no show is pending, and zero once `DOCK_HIDE_WAIT` has elapsed. `now` is a
     /// parameter rather than a clock read so the boundaries are testable without sleeping.
     pub fn remaining(&self, now: Instant) -> Duration {
         match self.last_show {
             None => Duration::ZERO,
             Some(last) => {
                 let elapsed = now.saturating_duration_since(last);
-                DOCK_TRANSITION_COOLDOWN.saturating_sub(elapsed)
+                DOCK_HIDE_WAIT.saturating_sub(elapsed)
             }
         }
     }
@@ -98,20 +115,33 @@ mod tests {
     }
 
     #[test]
-    fn a_hide_immediately_after_a_show_waits_the_whole_cooldown() {
+    fn a_hide_immediately_after_a_show_waits_the_whole_window() {
         let now = Instant::now();
         let mut cooldown = DockCooldown::new();
         cooldown.record_show(now);
-        assert_eq!(cooldown.remaining(now), DOCK_TRANSITION_COOLDOWN);
+        assert_eq!(cooldown.remaining(now), DOCK_HIDE_WAIT);
     }
 
     #[test]
-    fn waiting_is_what_is_left_of_the_cooldown() {
+    fn waiting_is_what_is_left_of_the_window() {
         let now = Instant::now();
         let mut cooldown = DockCooldown::new();
         cooldown.record_show(now);
         let after_999ms = now + Duration::from_millis(999);
-        assert_eq!(cooldown.remaining(after_999ms), Duration::from_millis(1));
+        assert_eq!(cooldown.remaining(after_999ms), Duration::from_millis(501));
+    }
+
+    /// The regression the margin exists for. Observed on 2026-09-03: toggles 1.001s apart left the
+    /// window hidden from capture but the app still in the Dock, with the control reading "on".
+    /// Letting a hide through at that distance is the bug, not a rounding detail.
+    #[test]
+    fn just_past_taos_own_second_still_waits() {
+        let now = Instant::now();
+        let mut cooldown = DockCooldown::new();
+        cooldown.record_show(now);
+        assert!(!cooldown
+            .remaining(now + Duration::from_millis(1_001))
+            .is_zero());
     }
 
     #[test]
@@ -119,10 +149,7 @@ mod tests {
         let now = Instant::now();
         let mut cooldown = DockCooldown::new();
         cooldown.record_show(now);
-        assert_eq!(
-            cooldown.remaining(now + DOCK_TRANSITION_COOLDOWN),
-            Duration::ZERO
-        );
+        assert_eq!(cooldown.remaining(now + DOCK_HIDE_WAIT), Duration::ZERO);
     }
 
     #[test]

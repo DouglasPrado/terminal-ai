@@ -27,7 +27,8 @@ every apply. Storing it would create the second source of truth Principle IV for
 
 | Name | Type | Lives in | Purpose |
 |------|------|----------|---------|
-| `last_dock_transition` | `Option<Instant>` | `AppState` | Feeds `DockCooldown`; see research R3. Reset on every dock visibility change the app makes. |
+| `dock_cooldown` | `Mutex<DockCooldown>` | `AppState` | Feeds the hide wait; see research R3. Updated on every dock visibility change the app makes. |
+| `invisible_mode_gate` | `tokio::sync::Mutex<()>` | `AppState` | Serializes changes. Held across the whole apply, cooldown wait included, so two toggles cannot both compute a wait against a stale instant. |
 
 ## Domain types (`crates/domain/src/invisible_mode.rs`)
 
@@ -36,8 +37,9 @@ every apply. Storing it would create the second source of truth Principle IV for
 /// rules below have somewhere to live and something to be tested against.
 pub struct InvisibleMode { pub enabled: bool }
 
-/// Pure arithmetic for tao's one-second dock debounce (research R3).
-/// `remaining(now)` is how long a hide must wait to not be silently dropped.
+/// Pure arithmetic for tao's one-second dock debounce plus the margin the measured
+/// failure forced (research R3). `remaining(now)` is how long a hide must wait to
+/// not be silently dropped.
 pub struct DockCooldown { last_show: Option<Instant> }
 ```
 

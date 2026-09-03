@@ -35,6 +35,12 @@ pub fn protect_window(window: &WebviewWindow, enabled: bool) -> Result<(), AppEr
 /// Turning **off** is best-effort in the reverse order — every switch is attempted even after one
 /// fails, because stopping halfway through a restore leaves the user more hidden, not less.
 pub async fn apply(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
+    // Held for the whole change, including the cooldown wait. Two toggles that overlap would each
+    // read the cooldown before the other recorded its transition, and both would compute a wait
+    // against a stale instant — which is how a hide gets dropped in silence.
+    let gate = app.state::<AppState>();
+    let _turn = gate.invisible_mode_gate.lock().await;
+
     let windows: Vec<WebviewWindow> = app.webview_windows().into_values().collect();
     if enabled {
         turn_on(app, &windows).await
