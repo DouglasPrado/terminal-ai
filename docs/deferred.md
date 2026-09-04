@@ -28,3 +28,21 @@ Project trust was removed from the product (constitution 2.0.0). The column stay
 V001 as `INTEGER NOT NULL DEFAULT 0` and is no longer read or written — inserts simply omit it.
 Dropping it would mean a destructive migration against users' existing `app.db` for no functional
 gain. Fold it into the next migration that has to rewrite the `projects` table for another reason.
+
+## Legacy memory tables (V001–V002)
+
+`memory_entries`, `memory_revisions`, `memory_fts` and their three triggers survive feature 002
+untouched, and the markdown bodies under `~/Library/Application Support/AITerminal/memory/` are not
+deleted. They are the source of the one-shot import and the path back if adopting the kernel turns
+out to be wrong. Dropping them is a destructive migration against every existing `app.db` for no
+functional gain, so it waits — same reasoning already recorded for `projects.trusted`. Fold it into
+a later migration once two releases have shipped with the kernel and nobody has needed the rollback.
+
+## Signing the bundled kernel sidecar
+
+Feature 002 ships the `ai-memory` binary inside the `.app` via `bundle.externalBin`. Notarization
+requires it to carry the same Developer ID signature and hardened runtime as the app itself, so the
+signing task above must cover `Contents/MacOS/ai-memory`, not only the main executable. An unsigned
+or quarantined sidecar is killed by the kernel with signal 9 and no useful message — the supervisor
+already detects that pattern and tells the user to clear the quarantine, but that is a workaround,
+not the fix.

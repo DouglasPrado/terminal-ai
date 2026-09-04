@@ -1,0 +1,30 @@
+[package]
+name = "terminal-ai-memory-kernel"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+# Deliberately depends on `domain` and nothing else internal.
+#
+# No `tauri` and no `persistence`: this crate is the seam Principle VII asks for, so the deferred
+# daemon can reuse it unchanged. Records about the kernel (wiring bindings, the migration log) are
+# written by the composition root in src-tauri, exactly as the usage poller's snapshots already are.
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+terminal-ai-domain = { path = "../domain" }
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
+mockito = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

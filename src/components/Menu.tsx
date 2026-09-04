@@ -106,6 +106,47 @@ export function MenuItem({
   );
 }
 
+/**
+ * A menu row for a setting rather than an action. Unlike `MenuItem` it does NOT close the
+ * menu — a toggle you have to reopen the menu to verify is a toggle you cannot trust.
+ */
+export function MenuToggle({
+  children,
+  checked,
+  onChange,
+  disabled,
+}: {
+  children: ReactNode;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      role="menuitemcheckbox"
+      type="button"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className="flex h-8 w-full items-center gap-2 rounded-control px-2.5 text-left text-ui text-text transition-colors hover:bg-raised hover:text-text-strong disabled:pointer-events-none disabled:opacity-40"
+    >
+      {children}
+      <span
+        aria-hidden
+        className={`ml-auto flex h-3.5 w-6 shrink-0 items-center rounded-full border transition-colors ${
+          checked ? "justify-end border-accent bg-accent/25" : "justify-start border-border bg-raised"
+        }`}
+      >
+        <span
+          className={`m-px h-2.5 w-2.5 rounded-full transition-colors ${
+            checked ? "bg-accent" : "bg-text-faint"
+          }`}
+        />
+      </span>
+    </button>
+  );
+}
+
 export function MenuLabel({ children }: { children: ReactNode }) {
   return <p className="px-2 pb-1 pt-1.5 text-meta text-text-faint">{children}</p>;
 }

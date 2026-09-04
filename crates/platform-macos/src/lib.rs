@@ -1,6 +1,8 @@
 //! macOS environment and app-data integration.
 #![forbid(unsafe_code)]
 
+pub mod keychain;
+
 use directories::BaseDirs;
 use serde::Serialize;
 use std::{
@@ -163,6 +165,8 @@ pub fn notify(title: &str, body: &str) -> Result<(), PlatformError> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
+    #[error("keychain: {0}")]
+    Keychain(String),
     #[error("home directory unavailable")]
     NoHome,
     #[error("login shell failed: {0}")]

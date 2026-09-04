@@ -30,7 +30,7 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 terminal-ai-domain = { path = "../crates/domain" }
-terminal-ai-memory-manager = { path = "../crates/memory-manager" }
+terminal-ai-memory-kernel = { path = "../crates/memory-kernel" }
 terminal-ai-persistence = { path = "../crates/persistence" }
 terminal-ai-platform-macos = { path = "../crates/platform-macos" }
 terminal-ai-provider-runtime = { path = "../crates/provider-runtime" }

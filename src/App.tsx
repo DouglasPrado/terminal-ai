@@ -18,6 +18,7 @@ import { ProjectList } from "./features/projects/ProjectList";
 import { WorktreePickerModal } from "./features/projects/WorktreePickerModal";
 import { SkillsView } from "./features/skills/SkillsView";
 import { MemoryView } from "./features/memory/MemoryView";
+import { InvisibleModeBadge } from "./features/settings/InvisibleModeBadge";
 import { SettingsMenu } from "./features/settings/SettingsMenu";
 import { UsageCards } from "./features/usage/UsageCards";
 import { LayoutTree, type PaneBinding } from "./features/workspaces/WorkspaceLayout";
@@ -70,6 +71,7 @@ export default function App() {
     scrollbackLines: 10_000,
     memoryAutoCapture: false,
     usageRefreshSeconds: 300,
+    invisibleMode: false,
   });
   // Per-workspace layout+bindings kept in memory so switching workspaces preserves live
   // sessionIds (which the persisted layout omits) — enables reattaching a running terminal
@@ -488,6 +490,7 @@ export default function App() {
                 }}
               />
               <ProviderProfiles />
+              <InvisibleModeBadge active={settings.invisibleMode} />
               <SettingsMenu settings={settings} onChange={setSettings} />
             </div>
           }

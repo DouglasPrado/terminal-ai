@@ -635,3 +635,214 @@ impl SkillsDao<'_> {
         }))
     }
 }
+
+/// One file the app touched while wiring an agent to the memory kernel.
+///
+/// `before_sha256` / `after_sha256` are what make removal safe on a file the app does not own:
+/// ai-memory merges into `~/.claude/settings.json` and friends, so "remove what we created" cannot
+/// mean "delete the file". If the file no longer hashes to `after_sha256`, the user edited it after
+/// we applied, and restoring the backup would destroy their work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryWiringArtifact {
+    pub path: String,
+    /// True when the file did not exist before the app wrote it, so removal may delete it outright.
+    pub created_file: bool,
+    pub backup_path: Option<String>,
+    pub before_sha256: Option<String>,
+    pub after_sha256: String,
+    /// The kernel binary path baked into hook commands. Hooks embed an absolute path, so an app
+    /// update that moves the sidecar silently breaks them; comparing this at startup is how that
+    /// is caught instead of discovered months later.
+    pub binary_path: Option<String>,
+    pub marker: String,
+    pub applied_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryWiringRecord {
+    pub id: String,
+    pub agent: String,
+    pub kind: String,
+    pub scope: String,
+    pub scope_ref_id: Option<String>,
+    pub enabled: bool,
+    pub artifacts: Vec<MemoryWiringArtifact>,
+}
+
+pub struct MemoryWiringDao<'a>(pub &'a Database);
+impl MemoryWiringDao<'_> {
+    pub fn upsert(&self, record: &MemoryWiringRecord) -> Result<(), PersistenceError> {
+        let now = Utc::now().to_rfc3339();
+        self.0.connection()?.execute(
+            "INSERT INTO memory_wiring_bindings(id,agent,kind,scope,scope_ref_id,enabled,artifacts_json,created_at,updated_at)\
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)\
+             ON CONFLICT(agent,kind,scope,scope_ref_id)DO UPDATE SET enabled=excluded.enabled,artifacts_json=excluded.artifacts_json,updated_at=excluded.updated_at",
+            rusqlite::params![
+                record.id,
+                record.agent,
+                record.kind,
+                record.scope,
+                record.scope_ref_id,
+                i64::from(record.enabled),
+                serde_json::to_string(&record.artifacts)?,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list(&self) -> Result<Vec<MemoryWiringRecord>, PersistenceError> {
+        let conn = self.0.connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT id,agent,kind,scope,scope_ref_id,enabled,artifacts_json FROM memory_wiring_bindings ORDER BY agent,kind",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MemoryWiringRecord {
+                id: row.get(0)?,
+                agent: row.get(1)?,
+                kind: row.get(2)?,
+                scope: row.get(3)?,
+                scope_ref_id: row.get(4)?,
+                enabled: row.get::<_, i64>(5)? != 0,
+                artifacts: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn find(
+        &self,
+        agent: &str,
+        kind: &str,
+        scope: &str,
+        scope_ref_id: Option<&str>,
+    ) -> Result<Option<MemoryWiringRecord>, PersistenceError> {
+        Ok(self.list()?.into_iter().find(|r| {
+            r.agent == agent
+                && r.kind == kind
+                && r.scope == scope
+                && r.scope_ref_id.as_deref() == scope_ref_id
+        }))
+    }
+
+    pub fn delete(&self, id: &str) -> Result<(), PersistenceError> {
+        self.0
+            .connection()?
+            .execute("DELETE FROM memory_wiring_bindings WHERE id=?1", [id])?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryMigrationRecord {
+    pub entry_id: String,
+    pub workspace: String,
+    pub project: String,
+    pub page_path: String,
+    pub body_sha256: String,
+}
+
+pub struct MemoryMigrationDao<'a>(pub &'a Database);
+impl MemoryMigrationDao<'_> {
+    /// Recorded per item rather than batched at the end, so an interrupted import resumes exactly
+    /// where it stopped instead of re-walking everything.
+    pub fn record(&self, entry: &MemoryMigrationRecord) -> Result<(), PersistenceError> {
+        self.0.connection()?.execute(
+            "INSERT INTO memory_migration_log(entry_id,workspace,project,page_path,body_sha256,imported_at)\
+             VALUES(?1,?2,?3,?4,?5,?6)\
+             ON CONFLICT(entry_id)DO UPDATE SET workspace=excluded.workspace,project=excluded.project,page_path=excluded.page_path,body_sha256=excluded.body_sha256,imported_at=excluded.imported_at",
+            rusqlite::params![
+                entry.entry_id,
+                entry.workspace,
+                entry.project,
+                entry.page_path,
+                entry.body_sha256,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list(&self) -> Result<Vec<MemoryMigrationRecord>, PersistenceError> {
+        let conn = self.0.connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT entry_id,workspace,project,page_path,body_sha256 FROM memory_migration_log ORDER BY imported_at",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MemoryMigrationRecord {
+                entry_id: row.get(0)?,
+                workspace: row.get(1)?,
+                project: row.get(2)?,
+                page_path: row.get(3)?,
+                body_sha256: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// How many legacy entries have never been imported — surfaced in kernel status so the panel
+    /// can offer the import without the app ever running it on its own.
+    pub fn pending_count(&self) -> Result<u64, PersistenceError> {
+        let conn = self.0.connection()?;
+        let count: i64 = conn.query_row(
+            "SELECT count(*) FROM memory_entries WHERE id NOT IN(SELECT entry_id FROM memory_migration_log)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0).unsigned_abs())
+    }
+
+    pub fn clear(&self) -> Result<(), PersistenceError> {
+        self.0
+            .connection()?
+            .execute("DELETE FROM memory_migration_log", [])?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryProjectIdentity {
+    pub project_id: String,
+    pub kernel_project: String,
+    pub repo_path: String,
+}
+
+pub struct MemoryProjectIdentityDao<'a>(pub &'a Database);
+impl MemoryProjectIdentityDao<'_> {
+    /// Remember which kernel project a Terminal AI project last resolved to.
+    pub fn record(&self, identity: &MemoryProjectIdentity) -> Result<(), PersistenceError> {
+        self.0.connection()?.execute(
+            "INSERT INTO memory_project_identity(project_id,kernel_project,repo_path,recorded_at)\
+             VALUES(?1,?2,?3,?4)\
+             ON CONFLICT(project_id)DO UPDATE SET kernel_project=excluded.kernel_project,repo_path=excluded.repo_path,recorded_at=excluded.recorded_at",
+            rusqlite::params![
+                identity.project_id,
+                identity.kernel_project,
+                identity.repo_path,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get(&self, project_id: &str) -> Result<Option<MemoryProjectIdentity>, PersistenceError> {
+        let conn = self.0.connection()?;
+        conn.query_row(
+            "SELECT project_id,kernel_project,repo_path FROM memory_project_identity WHERE project_id=?1",
+            [project_id],
+            |row| {
+                Ok(MemoryProjectIdentity {
+                    project_id: row.get(0)?,
+                    kernel_project: row.get(1)?,
+                    repo_path: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+}

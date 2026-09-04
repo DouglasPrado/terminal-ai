@@ -4040,7 +4040,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "terminal-ai-domain",
- "terminal-ai-memory-manager",
+ "terminal-ai-memory-kernel",
  "terminal-ai-persistence",
  "terminal-ai-platform-macos",
  "terminal-ai-project-manager",
@@ -4066,16 +4066,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "terminal-ai-memory-manager"
+name = "terminal-ai-memory-kernel"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
- "rusqlite",
+ "insta",
+ "mockito",
+ "reqwest 0.12.28",
  "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "terminal-ai-domain",
- "terminal-ai-persistence",
  "thiserror 2.0.18",
- "uuid",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

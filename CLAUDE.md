@@ -6,9 +6,11 @@ Operating manual for any Claude/agent session working in this repository. Read t
 multiple AI-agent terminals (Claude, Codex, OpenCode, shell) side by side, organized by cloned
 project and git worktree, with a sidebar for projects, skills, memory and provider-usage cards.
 
-> **Current state (2026-07-14):** The v1 specification is fully implemented through Phase 10;
-> all tasks and acceptance gates are complete. See `docs/validation-2026-07-14.md` for evidence
-> and `docs/deferred.md` for the explicitly out-of-scope daemon/release follow-up.
+> **Current state (2026-09-03):** v1 (feature 001) is implemented through Phase 10 — see
+> `docs/validation-2026-07-14.md`. Feature **002-ai-memory-kernel** replaces the home-grown memory
+> subsystem with the `ai-memory` kernel: Phases 1–7 are implemented (US8–US12), with the acceptance
+> run in `specs/002-ai-memory-kernel/quickstart.md` still to be driven. `docs/deferred.md` holds the
+> explicitly out-of-scope daemon/release follow-up.
 
 ---
 
@@ -103,7 +105,8 @@ terminal-ai/
     ├── project-manager/    # git discovery/clone/status (git2)
     ├── worktree-manager/   # git worktree create/list/remove
     ├── skill-manager/      # skill library, bindings, non-destructive per-provider sync
-    ├── memory-manager/     # scoped memory + FTS5
+    ├── memory-kernel/      # the ai-memory kernel: supervisor, /api/v1 reads, CLI writes,
+    │                       #   scope mapping, agent wiring, legacy import. NO tauri, NO persistence
     ├── persistence/        # rusqlite + refinery migrations + DAOs
     └── platform-macos/     # Keychain, login-shell env resolution, notifications
 # Deferred (Phase 10): crates/{daemon,ipc}/ — DaemonHost replaces InProcessHost, UI unchanged.
@@ -134,6 +137,11 @@ React UI ──(typed commands only)──▶ src-tauri ──▶ feature crates
 - New usage source → an adapter in `usage-core`; register it with the single poller. Never add a
   second poller.
 - New persisted data → a migration + DAO in `persistence`; a type/enum in `domain`.
+- New memory capability → a method on the `MemoryKernel` trait in `domain` **first**, then its
+  implementation in `memory-kernel`, then a typed command. Never reach around the trait.
+- Memory **content** does not live in `app.db` — it lives in the ai-memory kernel's wiki, in a store
+  shared with whatever ai-memory the user runs outside the app. `app.db` holds only records *about*
+  the kernel (wiring bindings, the import log, project identity).
 - New backend capability → a typed command in `src-tauri` (validated) delegating to a crate;
   document it in `specs/NNN-*/contracts/tauri-commands.md`.
 - New UI → a `src/features/<area>/` component reading a Zustand store; style from `theme.css` tokens.
@@ -198,7 +206,10 @@ App data lives at `~/Library/Application Support/AITerminal/` (`app.db`, `config
 
 - ❌ No generic command execution exposed to the frontend (Principle I).
 - ❌ No secrets/API keys in `app.db` or `config.toml` (Principle III).
-- ❌ No second usage poller; no per-terminal/per-card polling (Principle IV).
+- ❌ No second usage poller; no per-terminal/per-card polling (Principle IV). Same for the memory
+  kernel: one supervisor, one status poller, one cached snapshot.
+- ❌ Never stop or restart a memory server the app did not start (Principle VII, `owned`).
+- ❌ Never install lifecycle capture that cannot be confined to one project (Principle III).
 - ❌ No second design-token source; don't hardcode hex in components (Principle IV).
 - ❌ No business logic in `src-tauri` or in React components — it belongs in crates/stores.
 - ❌ No sideways/upward crate dependencies; keep `domain` IO-free.

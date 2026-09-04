@@ -22,6 +22,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.26", features = ["bundled", "modern_sqlite"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 # Native folder picker. Driven from Rust only — the WebView is never granted the plugin's JS
 # API, so the frontend still reaches it through one typed command (Principle I).

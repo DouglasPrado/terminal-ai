@@ -45,3 +45,6 @@ Thumbs.db
 
 # --- Spec Kit: keep specs & templates tracked; ignore only local runtime state ---
 # (.specify/ IS tracked; nothing to ignore there by default)
+
+# Pinned ai-memory kernel sidecar — fetched by scripts/fetch-ai-memory.sh, never committed (29 MB).
+src-tauri/binaries/

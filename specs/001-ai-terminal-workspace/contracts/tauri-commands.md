@@ -415,6 +415,31 @@ Purpose: show what would be injected before composing agent context.
 Validation: `projectRoots` entries must be real directories; scrollback cap within bounds;
 never accepts secret material.
 
+When `patch.invisibleMode` differs from the stored value the command applies the OS-level mode
+**before** persisting, and persists only if applying succeeded. The returned `settings.invisibleMode`
+is therefore the state actually in force, never the state that was requested — a caller that sends
+`true` and reads `false` back has been told it did not work. Error code
+`INVISIBLE_MODE_APPLY_FAILED` when applying was rolled back. Added by feature 003.
+
+### `notify`
+```ts
+{ title: string, body: string } → { ok: true, delivered: boolean }
+```
+`delivered` is `false` when the invisible mode is active and the notification was suppressed;
+suppressed notifications are dropped, not queued. Title and body are sanitized before display.
+
+### `AppSettings`
+```ts
+interface AppSettings {
+  projectRoots: string[];
+  keybindings: Record<string, string>;
+  scrollbackLines: number;
+  memoryAutoCapture: boolean;
+  usageRefreshSeconds: number;
+  invisibleMode: boolean;   // feature 003 — app-wide, default false
+}
+```
+
 ---
 
 ### Shared enums
