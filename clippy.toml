@@ -1,0 +1,4 @@
+# Restriction lints (unwrap_used / expect_used) are denied at the workspace level to keep
+# runtime code panic-free, but tests legitimately use unwrap/expect for fixtures and assertions.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

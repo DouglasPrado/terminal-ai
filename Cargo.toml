@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+directories = "6"
+fs2 = "0.4"
+git2 = "0.20"
+libc = "0.2"
+nix = { version = "0.28", features = ["signal"] }
+portable-pty = "0.9"
+refinery = { version = "0.8", features = ["rusqlite"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.26", features = ["bundled", "modern_sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+# Native folder picker. Driven from Rust only — the WebView is never granted the plugin's JS
+# API, so the frontend still reaches it through one typed command (Principle I).
+tauri-plugin-dialog = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

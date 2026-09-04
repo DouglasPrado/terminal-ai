@@ -1,0 +1,9 @@
+# ai-memory kernel pin — the ONLY place this version is written.
+#
+# Terminal AI ships this exact build as a Tauri sidecar (feature 002). Never track "latest":
+# the kernel's CLI output and /api/v1 shapes are an external contract we observe, not one we own,
+# and an unpinned upgrade would move them underneath a running app. Bumping this file is a
+# deliberate act that re-runs the contract probe in specs/002-ai-memory-kernel/research.md.
+AI_MEMORY_VERSION=v2.0.2
+AI_MEMORY_SHA256_AARCH64=1b7113614c76f6d38d80e39d9657806e6621a3cd20eeddd0c1927eadacc1d0c6
+AI_MEMORY_SHA256_X86_64=2823c93a6e323718a1138501b926a1e46a73aab1d60cb3a8cd3ac45b98498a2e

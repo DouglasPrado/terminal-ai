@@ -1,0 +1,14 @@
+[package]
+name = "terminal-ai-provider-runtime"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+terminal-ai-domain = { path = "../domain" }
+[dev-dependencies]
+tokio.workspace = true
+[lints]
+workspace = true

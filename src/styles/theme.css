@@ -1,0 +1,182 @@
+@import "tailwindcss";
+
+/* ── Design tokens ────────────────────────────────────────────────────────────
+   Single token source (Principle IV). Components use the semantic utilities
+   (bg-panel, border-border, text-text-muted, text-ui…) and never a raw hex.  */
+@theme {
+  /* Night-city ramp: cool violet-blue neutrals, deeper than neutral black, so
+     magenta and cyan read as emitted light instead of painted fill. */
+  --color-app: #08070d;
+  --color-elevated: #0c0b13;
+  --color-panel: #100e18;
+  --color-raised: #171423;
+  --color-raised-hover: #201c30;
+
+  /* Hairlines */
+  --color-border-subtle: #171425;
+  --color-border: #241f36;
+  --color-border-hover: #3b3357;
+  --color-border-active: #c026d3;
+
+  /* Ink */
+  --color-text: #e2e0ea;
+  --color-text-strong: #fafafa;
+  --color-text-muted: #9d97b3;
+  --color-text-faint: #655e80;
+
+  /* Neon duotone — magenta leads, cyan answers. Reserved for live state. */
+  --color-accent: #e879f9;
+  --color-accent-strong: #f5b8ff;
+  --color-accent-background: rgb(232 121 249 / 0.09);
+  --color-accent-background-hover: rgb(232 121 249 / 0.16);
+  --color-accent-line: rgb(232 121 249 / 0.35);
+  --color-cyan: #22d3ee;
+  --color-cyan-strong: #67e8f9;
+  --color-cyan-line: rgb(34 211 238 / 0.35);
+
+  /* Data + status */
+  --color-data-pink: #f472b6;
+  --color-data-cyan: #22d3ee;
+  --color-success: #34d399;
+  --color-warning: #facc15;
+  --color-danger: #ff4d6d;
+  --color-provider-opencode: #a78bfa;
+
+  /* Type — SF Pro for chrome, SF Mono for data, readouts and terminal. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
+
+  --text-meta: 0.75rem; /* 12px — counters, hints, secondary meta */
+  --text-meta--line-height: 1.0625rem;
+  --text-ui: 0.8125rem; /* 13px — controls, rows, menu items */
+  --text-ui--line-height: 1.25rem;
+  --text-title: 0.875rem; /* 14px — pane and section titles */
+  --text-title--line-height: 1.375rem;
+  --text-heading: 1.0625rem; /* 17px — view headings */
+  --text-heading--line-height: 1.5rem;
+  --text-readout: 0.6875rem; /* 11px — uppercase mono HUD labels */
+  --text-readout--line-height: 1rem;
+
+  --radius-chip: 4px;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --radius-modal: 14px;
+
+  --shadow-popover: 0 16px 40px -12px rgb(0 0 0 / 0.85), 0 0 0 1px rgb(255 255 255 / 0.05);
+  --shadow-modal: 0 32px 64px -16px rgb(0 0 0 / 0.9), 0 0 0 1px rgb(255 255 255 / 0.06);
+  --shadow-raised: inset 0 1px 0 rgb(255 255 255 / 0.05);
+  /* Emission, not fill: a tight ring plus a short bloom. */
+  --shadow-glow: 0 0 0 1px rgb(232 121 249 / 0.4), 0 0 20px -6px rgb(232 121 249 / 0.55);
+  --shadow-glow-cyan: 0 0 0 1px rgb(34 211 238 / 0.35), 0 0 18px -6px rgb(34 211 238 / 0.5);
+
+  --text-shadow-neon: 0 0 14px rgb(232 121 249 / 0.55);
+  --text-shadow-neon-cyan: 0 0 14px rgb(34 211 238 / 0.5);
+}
+
+/* Base resets belong in @layer base: an unlayered rule outranks every layered one, so a
+   bare `button { padding: 0 }` here would override the `px-*` utilities on every button. */
+@layer base {
+  :root {
+    color: var(--color-text);
+    background: var(--color-app);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+  button {
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+  ::selection {
+    background: var(--color-accent-background-hover);
+  }
+  /* Native select popups keep the system chrome — align their menu to the app. */
+  option {
+    background: var(--color-elevated);
+    color: var(--color-text);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+
+  /* Thin, unobtrusive dark scrollbars that match the surface. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-hover) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-border-hover);
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-text-faint);
+    background-clip: padding-box;
+  }
+
+  /* One focus ring for keyboard users, on the control's own shape. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* CRT scanline wash. Chrome only — the terminal itself must stay crisp. */
+  .scanlines::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgb(255 255 255 / 0.022) 0 1px,
+      transparent 1px 3px
+    );
+  }
+
+  /* Faint wireframe grid for empty surfaces waiting on input. */
+  .hud-grid {
+    background-image:
+      linear-gradient(to right, rgb(157 151 179 / 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(157 151 179 / 0.05) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+}

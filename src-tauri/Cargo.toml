@@ -1,0 +1,43 @@
+[package]
+name = "terminal-ai"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[lib]
+name = "terminal_ai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "terminal-ai"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+portable-pty.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+terminal-ai-domain = { path = "../crates/domain" }
+terminal-ai-memory-manager = { path = "../crates/memory-manager" }
+terminal-ai-persistence = { path = "../crates/persistence" }
+terminal-ai-platform-macos = { path = "../crates/platform-macos" }
+terminal-ai-provider-runtime = { path = "../crates/provider-runtime" }
+terminal-ai-pty-runtime = { path = "../crates/pty-runtime" }
+terminal-ai-project-manager = { path = "../crates/project-manager" }
+terminal-ai-skill-manager = { path = "../crates/skill-manager" }
+terminal-ai-usage-core = { path = "../crates/usage-core" }
+terminal-ai-worktree-manager = { path = "../crates/worktree-manager" }
+[lints]
+workspace = true
